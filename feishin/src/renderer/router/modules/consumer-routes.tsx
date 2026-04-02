@@ -15,9 +15,21 @@ const ConsumerSearchRoute = lazy(
 const ConsumerLibraryRoute = lazy(
     () => import('/@/renderer/features/consumer/screens/library-screen'),
 );
+
+// Original pages
 const MarketplacePage = lazy(() => import('/@/renderer/pages/Marketplace'));
 const PaymentsPage = lazy(() => import('/@/renderer/pages/Payments'));
 const ProfilePage = lazy(() => import('/@/renderer/pages/Profile'));
+
+// New refactored pages
+const RefactoredMarketplacePage = lazy(() => import('/@/renderer/pages/RefactoredMarketplace'));
+const RefactoredPaymentsPage = lazy(() => import('/@/renderer/pages/RefactoredPayments'));
+
+// Feature flag to switch between old and new implementations
+const useRefactoredPages = () => {
+    return import.meta.env?.VITE_ENABLE_NEW_MUSIC_DOMAIN === 'true' || 
+           import.meta.env?.VITE_ENABLE_NEW_PAYMENT_DOMAIN === 'true';
+};
 
 const MOBILE_BREAKPOINT = 768;
 
@@ -45,8 +57,17 @@ export const consumerRoutes = (
         <Route element={<NowPlayingRoute />} path={AppRoute.NOW_PLAYING} />
         <Route element={<HomeRoute />} path={AppRoute.FAVORITES} />
         <Route element={<HomeRoute />} path={AppRoute.SETTINGS} />
-        <Route element={<MarketplacePage />} path={AppRoute.MARKETPLACE} />
-        <Route element={<PaymentsPage />} path={AppRoute.PAYMENTS} />
+        
+        {/* Conditional rendering based on feature flag */}
+        <Route 
+            element={useRefactoredPages() ? <RefactoredMarketplacePage /> : <MarketplacePage />} 
+            path={AppRoute.MARKETPLACE} 
+        />
+        <Route 
+            element={useRefactoredPages() ? <RefactoredPaymentsPage /> : <PaymentsPage />} 
+            path={AppRoute.PAYMENTS} 
+        />
+        
         <Route element={<ProfilePage />} path={AppRoute.PROFILE} />
         <Route element={<HomeRoute />} path="*" />
     </Route>
