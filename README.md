@@ -114,3 +114,4 @@ Before production deploys:
 - set explicit `ALLOWED_HOSTS`
 - set explicit `ALLOWED_ORIGINS`
 - disable docs with `DOCS_ENABLED=false`
+# shega-1.0
