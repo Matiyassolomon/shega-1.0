@@ -21,4 +21,6 @@ def record_playback(
     except ValueError as exc:
         if str(exc) == "user_not_found":
             raise HTTPException(status_code=404, detail="User not found") from exc
+        if str(exc) == "song_not_found":
+            raise HTTPException(status_code=404, detail="Song not found") from exc
         raise

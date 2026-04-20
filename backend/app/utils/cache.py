@@ -1,6 +1,9 @@
 from collections.abc import Callable
+import json
 from time import time
 from typing import Generic, TypeVar
+
+from app.core.settings import get_settings
 
 T = TypeVar("T")
 
@@ -33,3 +36,41 @@ class TTLCache(Generic[T]):
         self.set(key, value)
         return value
 
+
+class CacheClient:
+    """Uses Redis when configured, otherwise falls back to process-local TTL caching."""
+
+    def __init__(self, ttl_seconds: int):
+        self.ttl_seconds = ttl_seconds
+        self.memory_cache: TTLCache[object] = TTLCache(ttl_seconds)
+        self.redis_client = self._build_redis_client()
+
+    def _build_redis_client(self):
+        settings = get_settings()
+        if not settings.redis_url:
+            return None
+        try:
+            import redis
+
+            return redis.Redis.from_url(settings.redis_url, decode_responses=True)
+        except Exception:
+            return None
+
+    def get(self, key: str):
+        if self.redis_client is not None:
+            try:
+                cached = self.redis_client.get(key)
+                if cached is not None:
+                    return json.loads(cached)
+            except Exception:
+                pass
+        return self.memory_cache.get(key)
+
+    def set(self, key: str, value):
+        if self.redis_client is not None:
+            try:
+                self.redis_client.setex(key, self.ttl_seconds, json.dumps(value, default=str))
+                return
+            except Exception:
+                pass
+        self.memory_cache.set(key, value)

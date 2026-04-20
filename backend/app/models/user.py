@@ -24,7 +24,7 @@ class User(Base):
     song_purchases = relationship("SongPurchase", back_populates="buyer")
     playback_events = relationship("PlaybackEvent", back_populates="user")
     playlist_saves = relationship("UserPlaylistSave", back_populates="user")
-    listening_sessions = relationship("ListeningSession", back_populates="user")
+    listening_sessions = relationship("PlaybackSession", back_populates="user")
 
 
 class Subscription(Base):

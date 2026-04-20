@@ -59,6 +59,19 @@ class AppSettings:
         self.max_upload_size_bytes = _get_int("MAX_UPLOAD_SIZE_BYTES", 10 * 1024 * 1024)
         self.log_level = _get_env("LOG_LEVEL", "INFO") or "INFO"
         self.rate_limit_per_minute = _get_int("RATE_LIMIT_PER_MINUTE", 60)
+        self.recommendation_rate_limit_per_minute = _get_int(
+            "RECOMMENDATION_RATE_LIMIT_PER_MINUTE",
+            30,
+        )
+        self.redis_url = _get_env("REDIS_URL", "")
+        self.recommendation_cache_ttl_seconds = _get_int(
+            "RECOMMENDATION_CACHE_TTL_SECONDS",
+            120,
+        )
+        self.trending_cache_ttl_seconds = _get_int(
+            "TRENDING_CACHE_TTL_SECONDS",
+            180,
+        )
         self.youtube_trends_enabled = _get_bool("YOUTUBE_TRENDS_ENABLED", False)
         self.youtube_api_key = _get_env("YOUTUBE_API_KEY", "")
         self.youtube_region_default = _get_env("YOUTUBE_REGION_DEFAULT", "ET") or "ET"
@@ -112,6 +125,15 @@ class AppSettings:
 
         if self.rate_limit_per_minute <= 0:
             raise ValueError("RATE_LIMIT_PER_MINUTE must be greater than 0")
+
+        if self.recommendation_rate_limit_per_minute <= 0:
+            raise ValueError("RECOMMENDATION_RATE_LIMIT_PER_MINUTE must be greater than 0")
+
+        if self.recommendation_cache_ttl_seconds <= 0:
+            raise ValueError("RECOMMENDATION_CACHE_TTL_SECONDS must be greater than 0")
+
+        if self.trending_cache_ttl_seconds <= 0:
+            raise ValueError("TRENDING_CACHE_TTL_SECONDS must be greater than 0")
 
         if self.youtube_trends_max_results <= 0:
             raise ValueError("YOUTUBE_TRENDS_MAX_RESULTS must be greater than 0")

@@ -5,7 +5,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -37,10 +37,28 @@ configure_logging(settings.log_level)
 logger = get_logger(__name__)
 
 
+def _ensure_runtime_schema() -> None:
+    """Apply lightweight compatibility DDL for local databases."""
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    if "playback_events" not in existing_tables:
+        return
+
+    columns = {column["name"] for column in inspector.get_columns("playback_events")}
+    with engine.begin() as connection:
+        if "session_id" not in columns:
+            connection.execute(text("ALTER TABLE playback_events ADD COLUMN session_id INTEGER"))
+        if "event_type" not in columns:
+            connection.execute(text("ALTER TABLE playback_events ADD COLUMN event_type VARCHAR(20)"))
+        if "timestamp" not in columns:
+            connection.execute(text("ALTER TABLE playback_events ADD COLUMN timestamp DATETIME"))
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     logger.info("application_startup")
     Base.metadata.create_all(bind=engine)
+    _ensure_runtime_schema()
     db = SessionLocal()
     try:
         crud.ensure_seed_data(db)

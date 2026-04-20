@@ -1,7 +1,19 @@
+from __future__ import annotations
+
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.schemas.event import PlaybackEventCreate, PlaybackEventResponse, PlaybackEventType
+from app.schemas.recommendation import (
+    RecommendationBreakdown,
+    RecommendationHomeResponse,
+    RecommendationNextResponse,
+    RecommendationSong,
+    TrendingResponse,
+    TrendingSongResponse,
+)
 
 DeviceClass = Literal["lite", "standard", "high"]
 SubscriptionStatus = Literal["active", "expired"]
@@ -232,27 +244,6 @@ class PlaylistRecommendationResponse(BaseModel):
     recommendations: list[PlaylistRecommendation]
 
 
-class SongRecommendationOut(BaseModel):
-    song_id: str
-    title: str
-    artist: str
-    genre: str
-    qenet_mode: str | None = None
-    country: str | None = None
-    score: float
-    score_breakdown: dict[str, float]
-    source: str = "internal"
-    source_metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class HybridRecommendationResponse(BaseModel):
-    date: str
-    holiday: str | None
-    location: str | None
-    model_backend: str
-    recommendations: list[SongRecommendationOut]
-
-
 class TasteVectorOut(BaseModel):
     qenet_mode_affinity: dict[str, float]
     genre_affinity: dict[str, float]
@@ -271,35 +262,14 @@ class PersonalizedFeedResponse(BaseModel):
     model_backend: str
     taste_vector: TasteVectorOut
     lookalike_audience: list[LookalikeUserOut]
-    recommendations: list[SongRecommendationOut]
-
-
-class TrendingSongOut(BaseModel):
-    song_id: str
-    title: str
-    artist: str
-    genre: str
-    qenet_mode: str | None = None
-    country: str | None = None
-    hot_score: float
-    momentum_score: float
-    regional_boost: float
-    social_proof: float
-    source: str = "internal"
-    source_metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class TrendingFeedResponse(BaseModel):
-    location: str | None
-    generated_at: str
-    recommendations: list[TrendingSongOut]
+    recommendations: list[RecommendationSong]
 
 
 class PlaybackEventIn(BaseModel):
     user_id: int | None = None
     song_id: str
-    title: str
-    artist: str
+    title: str = ""
+    artist: str = ""
     genre: str = "Unknown"
     country: str | None = None
     language: str | None = None
@@ -313,14 +283,15 @@ class PlaybackEventIn(BaseModel):
     is_looped: bool = False
     location: str | None = None
     playlist_id: str | None = None
-    extracted_features: dict[str, Any] = Field(default_factory=dict)
+    extracted_features: dict[str, object] = Field(default_factory=dict)
 
 
-class PlaybackEventResponse(BaseModel):
-    recorded: bool
-    user_id: int
-    song_id: str
-    updated_taste_vector: TasteVectorOut
+class HybridRecommendationResponse(BaseModel):
+    date: str
+    holiday: str | None
+    location: str | None
+    model_backend: str
+    recommendations: list[RecommendationSong]
 
 
 class UserProfileResponse(BaseModel):
@@ -377,3 +348,61 @@ class HolidayRuleOut(HolidayRuleBase):
     id: int
     created_at: datetime
     updated_at: datetime
+
+
+SongRecommendationOut = RecommendationSong
+TrendingSongOut = TrendingSongResponse
+TrendingFeedResponse = TrendingResponse
+
+
+__all__ = [
+    "AudioAnalysisResponse",
+    "BuyPlaylistRequest",
+    "BuyPlaylistResponse",
+    "BuySongRequest",
+    "BuySongResponse",
+    "CanPlayResponse",
+    "DeviceRegister",
+    "EthiopianDateIn",
+    "EthiopianDateOut",
+    "GregorianDateIn",
+    "HolidayRuleCreate",
+    "HolidayRuleOut",
+    "HolidayRuleUpdate",
+    "HybridRecommendationResponse",
+    "LookalikeUserOut",
+    "MarketplaceOut",
+    "MarketplacePlaylistOut",
+    "MarketplaceSongOut",
+    "PaymentConfirmRequest",
+    "PaymentConfirmResponse",
+    "PaymentCreateRequest",
+    "PaymentOut",
+    "PlaybackEventIn",
+    "PlaybackEventCreate",
+    "PlaybackEventResponse",
+    "PlaybackEventType",
+    "PlaylistRecommendation",
+    "PlaylistRecommendationResponse",
+    "PremiumSongOut",
+    "RecommendationBreakdown",
+    "RecommendationHomeResponse",
+    "RecommendationNextResponse",
+    "RecommendationSong",
+    "RegisterDeviceResponse",
+    "SavePlaylistRequest",
+    "SavePlaylistResponse",
+    "SecurePlaylistAccessResponse",
+    "SecureSongAccessResponse",
+    "SellPlaylistRequest",
+    "SellSongRequest",
+    "StreamPolicyResponse",
+    "SubscriptionCheckResponse",
+    "TasteVectorOut",
+    "TrendingFeedResponse",
+    "TrendingResponse",
+    "TrendingSongOut",
+    "TrendingSongResponse",
+    "UserOut",
+    "UserProfileResponse",
+]

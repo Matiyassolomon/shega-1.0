@@ -5,6 +5,7 @@ from app import schemas
 from app.core.auth import create_access_token, get_current_user_id
 from app.db import get_db
 from app.services import crud
+from app.services.playback_service import PlaybackService
 
 router = APIRouter(tags=["core"])
 
@@ -50,7 +51,7 @@ def log_playback(
 ):
     try:
         safe_payload = payload.model_copy(update={"user_id": current_user_id})
-        return crud.record_playback_event(db, safe_payload)
+        return PlaybackService(db).record_playback(safe_payload)
     except ValueError as exc:
         if str(exc) == "user_not_found":
             raise HTTPException(status_code=404, detail="User not found") from exc

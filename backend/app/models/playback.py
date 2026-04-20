@@ -22,6 +22,9 @@ class PlaybackEvent(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     song_id = Column(Integer, ForeignKey("library_songs.id"), nullable=False, index=True)
+    session_id = Column(Integer, ForeignKey("sessions.id"), nullable=False, index=True)
+    event_type = Column(String(20), nullable=False, index=True)
+    timestamp = Column(DateTime(timezone=True), nullable=False, default=utc_now, index=True)
     location = Column(String(100), nullable=True, index=True)
     completed_ratio = Column(Float, nullable=False, default=0.0)
     played_seconds = Column(Float, nullable=False, default=0.0)
@@ -32,4 +35,4 @@ class PlaybackEvent(Base):
 
     user = relationship("User", back_populates="playback_events")
     song = relationship("LibrarySong", back_populates="playback_events")
-
+    session = relationship("PlaybackSession", back_populates="playback_events")

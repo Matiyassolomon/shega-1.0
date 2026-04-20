@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime
-from math import exp, sqrt
+from datetime import UTC, date, datetime
+from math import exp
 
+from sqlalchemy import desc, or_
 from sqlalchemy.orm import Session
 
 from app import models, schemas
+from app.core.settings import get_settings
 from app.repositories.recommendation_repo import RecommendationRepository
-from app.services.youtube_signal_service import YouTubeSignalService, YouTubeTrend
-from app.utils.helpers import gregorian_to_ethiopian
+from app.utils.cache import CacheClient
 
 
 @dataclass
@@ -25,356 +25,230 @@ class TasteVector:
 class RankedSong:
     song: models.LibrarySong
     score: float
-    score_breakdown: dict[str, float]
-    source_metadata: dict[str, str]
+    reasons: list[str]
+    breakdown: schemas.RecommendationBreakdown
 
 
 class FastRecommendationLayer:
-    """Fetch a lightweight candidate pool from persisted user and song activity."""
+    """Layer 1: generate a broad but relevant candidate set."""
 
     def __init__(self, repository: RecommendationRepository):
         self.repository = repository
-        self.youtube_signals = YouTubeSignalService()
 
-    def fetch_candidates(self, user_id: int, limit: int = 200) -> list[models.LibrarySong]:
-        unheard = self.repository.songs.list_unheard_for_user(user_id, limit=limit)
-        if unheard:
-            return unheard
-        return self.repository.songs.list_catalog(limit=limit)
+    def get_candidate_songs(
+        self,
+        *,
+        user_id: int,
+        current_song_id: str | None = None,
+        limit: int = 120,
+    ) -> list[models.LibrarySong]:
+        """Collect candidates from artist, genre, history, and trending sources."""
+        song_map: dict[int, models.LibrarySong] = {}
 
-    def detect_holiday_rule(self, target_date: date) -> models.HolidayRule | None:
-        _eth_year, eth_month, eth_day = gregorian_to_ethiopian(
-            target_date.year,
-            target_date.month,
-            target_date.day,
+        user_top_song_ids = self.repository.playback.user_top_song_ids(user_id, limit=20)
+        listened_songs = (
+            self.repository.db.query(models.LibrarySong)
+            .filter(models.LibrarySong.id.in_(user_top_song_ids))
+            .all()
+            if user_top_song_ids
+            else []
         )
-        for rule in self.repository.songs.list_active_holiday_rules():
-            if rule.eth_month == eth_month and rule.eth_day == eth_day:
-                return rule
-        return None
+        listened_genres = {song.genre for song in listened_songs if song.genre}
+        listened_artists = {song.artist for song in listened_songs if song.artist}
+
+        if current_song_id:
+            current_song = self.repository.songs.get_by_navidrome_id(current_song_id)
+            if current_song is not None:
+                listened_genres.add(current_song.genre)
+                listened_artists.add(current_song.artist)
+
+        if listened_genres or listened_artists:
+            conditions = []
+            if listened_genres:
+                conditions.append(models.LibrarySong.genre.in_(list(listened_genres)))
+            if listened_artists:
+                conditions.append(models.LibrarySong.artist.in_(list(listened_artists)))
+            content_candidates = (
+                self.repository.db.query(models.LibrarySong)
+                .filter(or_(*conditions))
+                .order_by(desc(models.LibrarySong.play_count_7d), desc(models.LibrarySong.like_count_7d))
+                .limit(limit)
+                .all()
+            )
+            for song in content_candidates:
+                song_map[song.id] = song
+
+        for song in listened_songs:
+            if song.genre:
+                neighbors = (
+                    self.repository.db.query(models.LibrarySong)
+                    .filter(models.LibrarySong.genre == song.genre)
+                    .order_by(desc(models.LibrarySong.play_count_7d))
+                    .limit(12)
+                    .all()
+                )
+                for neighbor in neighbors:
+                    song_map[neighbor.id] = neighbor
+            if song.artist:
+                neighbors = (
+                    self.repository.db.query(models.LibrarySong)
+                    .filter(models.LibrarySong.artist == song.artist)
+                    .order_by(desc(models.LibrarySong.play_count_7d))
+                    .limit(12)
+                    .all()
+                )
+                for neighbor in neighbors:
+                    song_map[neighbor.id] = neighbor
+
+        trending_ids = self.repository.playback.trending_song_ids(limit=30)
+        if trending_ids:
+            trending_songs = (
+                self.repository.db.query(models.LibrarySong)
+                .filter(models.LibrarySong.id.in_(trending_ids))
+                .all()
+            )
+            for song in trending_songs:
+                song_map[song.id] = song
+
+        if not song_map:
+            for song in self.repository.songs.list_catalog(limit=limit):
+                song_map[song.id] = song
+
+        return list(song_map.values())[:limit]
 
 
 class RankingEngine:
-    """Rank candidates with personal, collaborative, freshness, and context signals."""
+    """Layer 2: score candidates using engagement and freshness signals."""
 
     def __init__(self, repository: RecommendationRepository):
         self.repository = repository
-        self.youtube_signals = YouTubeSignalService()
 
-    def build_taste_vector(self, user: models.User) -> TasteVector:
-        safe = user.taste_vector or {}
-        return TasteVector(
-            qenet_mode_affinity={
-                key: float(value)
-                for key, value in safe.get("qenet_mode_affinity", {}).items()
-            },
-            genre_affinity={
-                key: float(value)
-                for key, value in safe.get("genre_affinity", {}).items()
-            },
-            average_tempo=float(safe.get("average_tempo", 0.0)),
-            acoustic_signature={
-                key: float(value)
-                for key, value in safe.get("acoustic_signature", {}).items()
-            },
-        )
-
-    def rank(
+    def rank_songs(
         self,
         *,
-        user: models.User,
+        user_id: int,
         candidates: list[models.LibrarySong],
-        location: str | None,
-        target_date: date,
-        holiday_rule: models.HolidayRule | None,
     ) -> list[RankedSong]:
-        vector = self.build_taste_vector(user)
-        peer_events = self.repository.playback.list_recent_events(hours=24 * 30)
-        peer_vectors = self._build_peer_vectors(user.id, peer_events)
-        holiday_key = holiday_rule.key if holiday_rule else None
-        youtube_trends = self.youtube_signals.get_trending_tracks(location)
+        """Score each candidate by completion, skip, popularity, and recency."""
+        if not candidates:
+            return []
 
+        stats = self.repository.playback.song_event_stats([song.id for song in candidates])
         ranked: list[RankedSong] = []
         for song in candidates:
-            content_affinity = self._content_affinity(song, vector)
-            collaborative = self._peer_preference(song, peer_events, vector, peer_vectors)
-            popularity = self._popularity(song)
-            recency = self._recency(song, target_date)
-            regional = self._regional(song, location)
-            seasonal = self._seasonal(song, holiday_key)
-            youtube_boost, youtube_metadata = self._youtube_trend_boost(song, youtube_trends)
+            song_stats = stats.get(song.id, {})
+            completion_rate = float(song_stats.get("completion_rate", 0.0))
+            skip_rate = float(song_stats.get("skip_rate", song.skip_rate))
+            play_count = float(song_stats.get("play_count", song.play_count_7d))
+            recency = self._recency_score(song_stats.get("last_played_at"), song.release_date)
 
-            final_score = (
-                content_affinity * 0.38
-                + collaborative * 0.22
-                + popularity * 0.16
-                + recency * 0.10
-                + regional * 0.08
-                + seasonal * 0.04
-                + youtube_boost * 0.02
+            score = (
+                completion_rate * 45.0
+                + (1.0 - min(skip_rate, 1.0)) * 25.0
+                + min(play_count / 10.0, 20.0)
+                + recency * 10.0
             )
             ranked.append(
                 RankedSong(
                     song=song,
-                    score=round(final_score, 4),
-                    score_breakdown={
-                        "content_affinity": round(content_affinity, 4),
-                        "collaborative_filtering": round(collaborative, 4),
-                        "popularity": round(popularity, 4),
-                        "recency": round(recency, 4),
-                        "regional_context": round(regional, 4),
-                        "seasonal_context": round(seasonal, 4),
-                        "youtube_trend": round(youtube_boost, 4),
-                    },
-                    source_metadata=youtube_metadata,
+                    score=round(score, 4),
+                    reasons=self._build_reasons(song, completion_rate, skip_rate, play_count),
+                    breakdown=schemas.RecommendationBreakdown(
+                        completion_rate=round(completion_rate, 4),
+                        skip_rate=round(skip_rate, 4),
+                        popularity=round(min(play_count / 10.0, 20.0), 4),
+                        recency=round(recency * 10.0, 4),
+                        diversity_adjustment=0.0,
+                        session_penalty=0.0,
+                    ),
                 )
             )
 
         ranked.sort(key=lambda item: item.score, reverse=True)
         return ranked
 
-    def _content_affinity(self, song: models.LibrarySong, vector: TasteVector) -> float:
-        score = 0.0
-        if song.qenet_mode:
-            score += vector.qenet_mode_affinity.get(song.qenet_mode, 0.0) * 100
-        if song.genre:
-            score += vector.genre_affinity.get(song.genre, 0.0) * 80
-        if vector.average_tempo and song.tempo:
-            tempo_distance = abs(vector.average_tempo - song.tempo)
-            score += max(0.0, 30.0 - min(tempo_distance / 2.0, 30.0))
+    def _recency_score(self, last_played_at: datetime | None, release_date: str | None) -> float:
+        """Prefer songs with fresh engagement or recent release dates."""
+        if last_played_at is not None:
+            if last_played_at.tzinfo is None:
+                last_played_at = last_played_at.replace(tzinfo=UTC)
+            age_hours = max((datetime.now(UTC) - last_played_at).total_seconds() / 3600, 0.0)
+            return exp(-age_hours / 72.0)
 
-        for key, preference in vector.acoustic_signature.items():
-            raw = (song.extracted_features or {}).get(key)
-            if isinstance(raw, int | float):
-                score += max(0.0, 20.0 - abs(preference - float(raw)) * 10)
-        return score
-
-    def _build_peer_vectors(
-        self,
-        user_id: int,
-        events: list[models.PlaybackEvent],
-    ) -> dict[int, TasteVector]:
-        grouped_by_user: defaultdict[int, list[models.PlaybackEvent]] = defaultdict(list)
-        for event in events:
-            if event.user_id != user_id:
-                grouped_by_user[event.user_id].append(event)
-
-        vectors: dict[int, TasteVector] = {}
-        for peer_id, peer_events in grouped_by_user.items():
-            qenet = Counter()
-            genres = Counter()
-            acoustic_totals: defaultdict[str, float] = defaultdict(float)
-            total_weight = 0.0
-            weighted_tempo = 0.0
-
-            for event in peer_events:
-                weight = max(float(event.weight), 0.1)
-                total_weight += weight
-                if event.song.qenet_mode:
-                    qenet[event.song.qenet_mode] += weight
-                if event.song.genre:
-                    genres[event.song.genre] += weight
-                if event.song.tempo:
-                    weighted_tempo += event.song.tempo * weight
-                for key, value in (event.song.extracted_features or {}).items():
-                    if isinstance(value, int | float):
-                        acoustic_totals[key] += float(value) * weight
-
-            if total_weight <= 0:
-                continue
-
-            vectors[peer_id] = TasteVector(
-                qenet_mode_affinity={
-                    key: value / total_weight for key, value in qenet.items()
-                },
-                genre_affinity={
-                    key: value / total_weight for key, value in genres.items()
-                },
-                average_tempo=weighted_tempo / total_weight if total_weight else 0.0,
-                acoustic_signature={
-                    key: value / total_weight for key, value in acoustic_totals.items()
-                },
-            )
-
-        return vectors
-
-    def _peer_preference(
-        self,
-        song: models.LibrarySong,
-        events: list[models.PlaybackEvent],
-        vector: TasteVector,
-        peer_vectors: dict[int, TasteVector],
-    ) -> float:
-        score = 0.0
-        for event in events:
-            if event.song.navidrome_song_id != song.navidrome_song_id:
-                continue
-            peer_vector = peer_vectors.get(event.user_id)
-            if peer_vector is None:
-                continue
-            score += self._cosine_similarity(vector, peer_vector) * float(event.weight) * 20
-        return score
-
-    def _cosine_similarity(self, left: TasteVector, right: TasteVector) -> float:
-        left_values: dict[str, float] = {}
-        right_values: dict[str, float] = {}
-
-        for key, value in left.qenet_mode_affinity.items():
-            left_values[f"qenet:{key}"] = value
-        for key, value in right.qenet_mode_affinity.items():
-            right_values[f"qenet:{key}"] = value
-        for key, value in left.genre_affinity.items():
-            left_values[f"genre:{key}"] = value
-        for key, value in right.genre_affinity.items():
-            right_values[f"genre:{key}"] = value
-        for key, value in left.acoustic_signature.items():
-            left_values[f"acoustic:{key}"] = value
-        for key, value in right.acoustic_signature.items():
-            right_values[f"acoustic:{key}"] = value
-
-        left_values["tempo"] = left.average_tempo / 220.0 if left.average_tempo else 0.0
-        right_values["tempo"] = right.average_tempo / 220.0 if right.average_tempo else 0.0
-
-        keys = set(left_values) | set(right_values)
-        dot = sum(
-            left_values.get(key, 0.0) * right_values.get(key, 0.0)
-            for key in keys
-        )
-        left_norm = sqrt(sum(value * value for value in left_values.values()))
-        right_norm = sqrt(sum(value * value for value in right_values.values()))
-        if left_norm == 0 or right_norm == 0:
-            return 0.0
-        return dot / (left_norm * right_norm)
-
-    def _popularity(self, song: models.LibrarySong) -> float:
-        return (
-            (song.play_count_7d * 0.6)
-            + (song.like_count_7d * 1.8)
-            - (song.skip_rate * 20.0)
-        )
-
-    def _recency(self, song: models.LibrarySong, target_date: date) -> float:
-        if not song.release_date:
-            return 0.0
-        try:
-            released = datetime.strptime(song.release_date, "%Y-%m-%d").date()
-        except ValueError:
-            return 0.0
-        age_days = max((target_date - released).days, 0)
-        return exp(-age_days / 45.0) * 100.0
-
-    def _regional(self, song: models.LibrarySong, location: str | None) -> float:
-        if not location or not song.country:
-            return 0.0
-        return 35.0 if location.strip().lower() == song.country.strip().lower() else 0.0
-
-    def _seasonal(self, song: models.LibrarySong, holiday_key: str | None) -> float:
-        if not holiday_key:
-            return 0.0
-        haystacks = [
-            song.navidrome_song_id.lower(),
-            (song.playlist_id or "").lower(),
-            song.genre.lower(),
-        ]
-        if any(holiday_key.lower() in haystack for haystack in haystacks):
-            return 40.0
-        if song.genre.lower() in {"traditional", "gospel"}:
-            return 10.0
+        if release_date:
+            try:
+                released_on = datetime.strptime(release_date, "%Y-%m-%d").date()
+            except ValueError:
+                return 0.0
+            age_days = max((date.today() - released_on).days, 0)
+            return exp(-age_days / 30.0)
         return 0.0
 
-    def _youtube_trend_boost(
+    def _build_reasons(
         self,
         song: models.LibrarySong,
-        trends: list[YouTubeTrend],
-    ) -> tuple[float, dict[str, str]]:
-        if not trends:
-            return 0.0, {}
-
-        song_title = song.title.lower()
-        song_artist = song.artist.lower()
-        song_genre = song.genre.lower()
-
-        for trend in trends:
-            trend_title = trend.title.lower()
-            trend_channel = trend.channel_title.lower()
-
-            title_match = song_title in trend_title or trend_title in song_title
-            artist_match = song_artist in trend_title or song_artist in trend_channel
-            genre_match = song_genre in trend_title or song_genre in trend.tags
-
-            if artist_match and title_match:
-                return 100.0, {
-                    "youtube_video_id": trend.video_id,
-                    "youtube_region": trend.region_code,
-                    "youtube_title": trend.title,
-                    "youtube_channel": trend.channel_title,
-                }
-            if artist_match:
-                return 70.0, {
-                    "youtube_video_id": trend.video_id,
-                    "youtube_region": trend.region_code,
-                    "youtube_title": trend.title,
-                    "youtube_channel": trend.channel_title,
-                }
-            if genre_match:
-                return 35.0, {
-                    "youtube_video_id": trend.video_id,
-                    "youtube_region": trend.region_code,
-                    "youtube_title": trend.title,
-                    "youtube_channel": trend.channel_title,
-                }
-
-        return 0.0, {}
+        completion_rate: float,
+        skip_rate: float,
+        play_count: float,
+    ) -> list[str]:
+        """Explain recommendation decisions in a compact, stable way."""
+        reasons: list[str] = []
+        if completion_rate >= 0.6:
+            reasons.append("high completion rate")
+        if skip_rate <= 0.2:
+            reasons.append("low skip rate")
+        if play_count >= 10:
+            reasons.append("trending with listeners")
+        if song.genre:
+            reasons.append(f"genre match: {song.genre}")
+        return reasons[:4]
 
 
 class SessionOptimizer:
-    """Re-order top candidates to encourage longer continuous listening."""
+    """Layer 3: improve session flow and reduce fatigue."""
 
     def __init__(self, repository: RecommendationRepository):
         self.repository = repository
 
-    def optimize(
+    def optimize_session(
         self,
         *,
         user_id: int,
         ranked_songs: list[RankedSong],
         limit: int,
-    ) -> tuple[list[RankedSong], models.ListeningSession]:
-        session = self.repository.playback.get_or_start_session(user_id)
-        recent_history = self.repository.playback.list_recent_events_for_user(
-            user_id,
-            hours=6,
-            limit=10,
-        )
+    ) -> tuple[list[RankedSong], models.PlaybackSession]:
+        """Penalize repeats and recent skips while encouraging genre diversity."""
+        session = self.repository.playback.get_or_create_session(user_id)
+        recent_events = self.repository.playback.get_recent_user_events(user_id, hours=12, limit=25)
+        recent_artists = [event.song.artist for event in recent_events if event.song and event.song.artist]
+        recent_genres = [event.song.genre for event in recent_events if event.song and event.song.genre]
+        recent_skips = self.repository.playback.recently_skipped_song_ids(user_id, hours=24, limit=25)
 
         optimized: list[RankedSong] = []
-        recent_artists = [event.song.artist for event in recent_history]
-        recent_genres = [event.song.genre for event in recent_history]
-        recent_tempos = [event.song.tempo for event in recent_history if event.song.tempo]
-
         remaining = ranked_songs[:]
         while remaining and len(optimized) < limit:
             best_index = 0
             best_score = float("-inf")
 
-            for index, candidate in enumerate(remaining):
-                adjusted = candidate.score + self._continuation_bonus(
-                    candidate.song,
+            for index, ranked in enumerate(remaining):
+                adjusted_score, diversity_adjustment, session_penalty = self._session_adjusted_score(
+                    ranked=ranked,
                     recent_artists=recent_artists,
                     recent_genres=recent_genres,
-                    recent_tempos=recent_tempos,
+                    recent_skips=recent_skips,
                     queued=optimized,
                 )
-                if adjusted > best_score:
-                    best_score = adjusted
+                if adjusted_score > best_score:
+                    best_score = adjusted_score
                     best_index = index
+                    remaining[index].score = round(adjusted_score, 4)
+                    remaining[index].breakdown.diversity_adjustment = round(diversity_adjustment, 4)
+                    remaining[index].breakdown.session_penalty = round(session_penalty, 4)
 
             chosen = remaining.pop(best_index)
             optimized.append(chosen)
             recent_artists.append(chosen.song.artist)
             recent_genres.append(chosen.song.genre)
-            if chosen.song.tempo:
-                recent_tempos.append(chosen.song.tempo)
 
         self.repository.playback.replace_session_recommendations(
             session.id,
@@ -382,106 +256,170 @@ class SessionOptimizer:
         )
         return optimized, session
 
-    def _continuation_bonus(
+    def _session_adjusted_score(
         self,
-        song: models.LibrarySong,
         *,
+        ranked: RankedSong,
         recent_artists: list[str],
         recent_genres: list[str],
-        recent_tempos: list[float],
+        recent_skips: set[int],
         queued: list[RankedSong],
-    ) -> float:
-        bonus = 0.0
-        if recent_artists and song.artist != recent_artists[-1]:
-            bonus += 4.0
-        elif recent_artists:
-            bonus -= 8.0
+    ) -> tuple[float, float, float]:
+        """Apply repeat, skip, and diversity adjustments to a ranked song."""
+        diversity_adjustment = 0.0
+        session_penalty = 0.0
 
-        if recent_genres and song.genre == recent_genres[-1]:
-            bonus += 2.0
-        elif recent_genres:
-            bonus += 1.0
+        if ranked.song.id in recent_skips:
+            session_penalty -= 18.0
 
-        if recent_tempos and song.tempo:
-            tempo_delta = abs(song.tempo - recent_tempos[-1])
-            bonus += max(-6.0, 6.0 - (tempo_delta / 8.0))
+        if recent_artists and ranked.song.artist == recent_artists[-1]:
+            session_penalty -= 10.0
+        elif ranked.song.artist not in recent_artists[-3:]:
+            diversity_adjustment += 4.0
 
-        if queued and queued[-1].song.navidrome_song_id == song.navidrome_song_id:
-            bonus -= 50.0
+        if recent_genres and ranked.song.genre != recent_genres[-1]:
+            diversity_adjustment += 2.5
+        elif recent_genres.count(ranked.song.genre) >= 2:
+            session_penalty -= 3.0
 
-        return bonus
+        if queued and any(item.song.navidrome_song_id == ranked.song.navidrome_song_id for item in queued):
+            session_penalty -= 50.0
+
+        return ranked.score + diversity_adjustment + session_penalty, diversity_adjustment, session_penalty
 
 
 class RecommendationService:
+    """Coordinates recommendation generation, caching, and compatibility adapters."""
+
     def __init__(self, db: Session):
+        self.db = db
         self.repository = RecommendationRepository(db)
         self.fast_layer = FastRecommendationLayer(self.repository)
         self.ranking_engine = RankingEngine(self.repository)
         self.session_optimizer = SessionOptimizer(self.repository)
+        settings = get_settings()
+        self.recommendation_cache = CacheClient(settings.recommendation_cache_ttl_seconds)
+        self.trending_cache = CacheClient(settings.trending_cache_ttl_seconds)
+
+    def get_home_recommendations(
+        self,
+        *,
+        user_id: int,
+        limit: int = 12,
+    ) -> schemas.RecommendationHomeResponse:
+        """Return a cached home feed for the authenticated user."""
+        self._ensure_user_exists(user_id)
+        cache_key = f"recommendations:home:{user_id}:{limit}"
+        cached = self.recommendation_cache.get(cache_key)
+        if cached is not None:
+            return schemas.RecommendationHomeResponse.model_validate(cached)
+
+        candidates = self.fast_layer.get_candidate_songs(user_id=user_id, limit=max(limit * 10, 50))
+        ranked = self.ranking_engine.rank_songs(user_id=user_id, candidates=candidates)
+        optimized, _session = self.session_optimizer.optimize_session(
+            user_id=user_id,
+            ranked_songs=ranked,
+            limit=limit,
+        )
+        payload = schemas.RecommendationHomeResponse(
+            generated_at=datetime.now(UTC),
+            recommendations=[self._serialize_ranked_song(item) for item in optimized],
+        )
+        self.recommendation_cache.set(cache_key, payload.model_dump(mode="json"))
+        return payload
+
+    def get_next_recommendations(
+        self,
+        *,
+        user_id: int,
+        song_id: str,
+        limit: int = 8,
+    ) -> schemas.RecommendationNextResponse:
+        """Return the next-song queue anchored on the current track."""
+        self._ensure_user_exists(user_id)
+        if self.repository.songs.get_by_navidrome_id(song_id) is None:
+            raise ValueError("song_not_found")
+
+        candidates = self.fast_layer.get_candidate_songs(
+            user_id=user_id,
+            current_song_id=song_id,
+            limit=max(limit * 10, 50),
+        )
+        ranked = self.ranking_engine.rank_songs(user_id=user_id, candidates=candidates)
+        optimized, _session = self.session_optimizer.optimize_session(
+            user_id=user_id,
+            ranked_songs=[item for item in ranked if item.song.navidrome_song_id != song_id],
+            limit=limit,
+        )
+        return schemas.RecommendationNextResponse(
+            generated_at=datetime.now(UTC),
+            current_song_id=song_id,
+            recommendations=[self._serialize_ranked_song(item) for item in optimized],
+        )
+
+    def get_trending_recommendations(self, *, limit: int = 12) -> schemas.TrendingResponse:
+        """Return trending songs from internal playback activity only."""
+        cache_key = f"recommendations:trending:{limit}"
+        cached = self.trending_cache.get(cache_key)
+        if cached is not None:
+            return schemas.TrendingResponse.model_validate(cached)
+
+        trending_ids = self.repository.playback.trending_song_ids(limit=max(limit * 4, 20))
+        songs = (
+            self.db.query(models.LibrarySong)
+            .filter(models.LibrarySong.id.in_(trending_ids))
+            .all()
+            if trending_ids
+            else self.repository.songs.list_catalog(limit=limit)
+        )
+        stats = self.repository.playback.song_event_stats([song.id for song in songs], hours=24 * 7)
+        response = schemas.TrendingResponse(
+            generated_at=datetime.now(UTC),
+            recommendations=[
+                schemas.TrendingSongResponse(
+                    song_id=song.navidrome_song_id,
+                    title=song.title,
+                    artist=song.artist,
+                    genre=song.genre,
+                    stream_url=song.stream_path,
+                    play_count=int(stats.get(song.id, {}).get("play_count", song.play_count_7d)),
+                    completion_rate=round(float(stats.get(song.id, {}).get("completion_rate", 0.0)), 4),
+                    skip_rate=round(float(stats.get(song.id, {}).get("skip_rate", song.skip_rate)), 4),
+                    hot_score=round(self._trending_hot_score(song, stats.get(song.id, {})), 4),
+                    metadata={"source": "internal-playback"},
+                )
+                for song in sorted(
+                    songs,
+                    key=lambda row: self._trending_hot_score(row, stats.get(row.id, {})),
+                    reverse=True,
+                )[:limit]
+            ],
+        )
+        self.trending_cache.set(cache_key, response.model_dump(mode="json"))
+        return response
 
     def get_personalized_feed(
         self,
         *,
         user_id: int,
-        location: str | None,
+        location: str | None = None,
         limit: int,
         target_date: date | None = None,
     ) -> schemas.PersonalizedFeedResponse:
-        user = self.repository.users.get_by_id(user_id)
-        if user is None:
-            raise ValueError("user_not_found")
-
-        target = target_date or date.today()
-        candidates = self.fast_layer.fetch_candidates(
-            user_id=user_id,
-            limit=max(limit * 8, 40),
-        )
-        holiday_rule = self.fast_layer.detect_holiday_rule(target)
-        ranked = self.ranking_engine.rank(
-            user=user,
-            candidates=candidates,
-            location=location,
-            target_date=target,
-            holiday_rule=holiday_rule,
-        )
-        optimized, session = self.session_optimizer.optimize(
-            user_id=user_id,
-            ranked_songs=ranked,
-            limit=limit,
-        )
-
-        vector = self.ranking_engine.build_taste_vector(user)
-        lookalikes = self._lookalikes(user_id, vector)
+        """Compatibility adapter for older endpoints."""
+        response = self.get_home_recommendations(user_id=user_id, limit=limit)
         return schemas.PersonalizedFeedResponse(
             user_id=user_id,
             location=location,
-            model_backend="fast_rank_session_v1",
+            model_backend="behavioral_recommendation_v2",
             taste_vector=schemas.TasteVectorOut(
-                qenet_mode_affinity=vector.qenet_mode_affinity,
-                genre_affinity=vector.genre_affinity,
-                average_tempo=round(vector.average_tempo, 2),
-                acoustic_signature={
-                    key: round(value, 4)
-                    for key, value in vector.acoustic_signature.items()
-                },
+                qenet_mode_affinity={},
+                genre_affinity={},
+                average_tempo=0.0,
+                acoustic_signature={},
             ),
-            lookalike_audience=lookalikes,
-            recommendations=[
-                schemas.SongRecommendationOut(
-                    song_id=item.song.navidrome_song_id,
-                    title=item.song.title,
-                    artist=item.song.artist,
-                    genre=item.song.genre,
-                    qenet_mode=item.song.qenet_mode,
-                    country=item.song.country,
-                    score=item.score,
-                    score_breakdown=item.score_breakdown
-                    | {"session_id": float(session.id)},
-                    source="youtube+internal" if item.source_metadata else "internal",
-                    source_metadata=item.source_metadata,
-                )
-                for item in optimized
-            ],
+            lookalike_audience=[],
+            recommendations=response.recommendations,
         )
 
     def get_hybrid_feed(
@@ -492,66 +430,45 @@ class RecommendationService:
         target_date: date | None = None,
         user_id: int | None = None,
     ) -> schemas.HybridRecommendationResponse:
-        target = target_date or date.today()
-        catalog = (
-            self.repository.songs.list_unheard_for_user(user_id, limit=max(limit * 8, 40))
-            if user_id
-            else self.repository.songs.list_catalog(limit=max(limit * 8, 40))
-        )
-        holiday_rule = self.fast_layer.detect_holiday_rule(target)
-        reference_user = self.repository.users.get_by_id(user_id) if user_id else None
-        if reference_user is None:
-            reference_user = models.User(
-                taste_vector={},
-                device_class="standard",
-                is_telegram_user=False,
-            )
-
-        ranked = self.ranking_engine.rank(
-            user=reference_user,
-            candidates=catalog,
-            location=location,
-            target_date=target,
-            holiday_rule=holiday_rule,
-        )[:limit]
-
-        return schemas.HybridRecommendationResponse(
-            date=target.isoformat(),
-            holiday=holiday_rule.key if holiday_rule else None,
-            location=location,
-            model_backend="fast_rank_session_v1",
-            recommendations=[
-                schemas.SongRecommendationOut(
-                    song_id=item.song.navidrome_song_id,
-                    title=item.song.title,
-                    artist=item.song.artist,
-                    genre=item.song.genre,
-                    qenet_mode=item.song.qenet_mode,
-                    country=item.song.country,
-                    score=item.score,
-                    score_breakdown=item.score_breakdown,
-                    source="youtube+internal" if item.source_metadata else "internal",
-                    source_metadata=item.source_metadata,
+        """Compatibility adapter that falls back to trending when no user is provided."""
+        if user_id is not None:
+            home = self.get_home_recommendations(user_id=user_id, limit=limit)
+            recommendations = home.recommendations
+        else:
+            recommendations = [
+                schemas.RecommendationSong(
+                    song_id=item.song_id,
+                    title=item.title,
+                    artist=item.artist,
+                    genre=item.genre,
+                    stream_url=item.stream_url,
+                    score=item.hot_score,
+                    reasons=["trending with listeners"],
+                    breakdown=schemas.RecommendationBreakdown(
+                        completion_rate=item.completion_rate,
+                        skip_rate=item.skip_rate,
+                        popularity=item.hot_score,
+                        recency=0.0,
+                        diversity_adjustment=0.0,
+                        session_penalty=0.0,
+                    ),
                 )
-                for item in ranked
-            ],
+                for item in self.get_trending_recommendations(limit=limit).recommendations
+            ]
+        return schemas.HybridRecommendationResponse(
+            date=(target_date or date.today()).isoformat(),
+            holiday=None,
+            location=location,
+            model_backend="behavioral_recommendation_v2",
+            recommendations=recommendations,
         )
 
-    def recommend_playlists(
-        self,
-        *,
-        target_date: date | None = None,
-    ) -> schemas.PlaylistRecommendationResponse:
-        target = target_date or date.today()
-        holiday_rule = self.fast_layer.detect_holiday_rule(target)
-        recommendations = [
-            schemas.PlaylistRecommendation(**item)
-            for item in (holiday_rule.recommendations if holiday_rule else [])
-        ]
+    def recommend_playlists(self, *, target_date: date | None = None) -> schemas.PlaylistRecommendationResponse:
+        """Compatibility response while playlist recommendations are out of scope."""
         return schemas.PlaylistRecommendationResponse(
-            date=target.isoformat(),
-            holiday=holiday_rule.key if holiday_rule else None,
-            recommendations=recommendations,
+            date=(target_date or date.today()).isoformat(),
+            holiday=None,
+            recommendations=[],
         )
 
     def get_trending_feed(
@@ -559,90 +476,30 @@ class RecommendationService:
         *,
         location: str | None,
         limit: int,
-    ) -> schemas.TrendingFeedResponse:
-        songs = self.repository.songs.list_catalog(limit=max(limit * 8, 40))
-        playlist_stats = self.repository.songs.list_playlist_signals()
-        events = self.repository.playback.list_recent_events(hours=24 * 7)
-        youtube_trends = self.ranking_engine.youtube_signals.get_trending_tracks(location)
-        now = datetime.utcnow()
+    ) -> schemas.TrendingResponse:
+        """Compatibility wrapper for older trending route."""
+        return self.get_trending_recommendations(limit=limit)
 
-        event_totals: defaultdict[str, float] = defaultdict(float)
-        regional_totals: defaultdict[str, float] = defaultdict(float)
-        for event in events:
-            occurred_at = event.occurred_at.replace(tzinfo=None)
-            hours_ago = max((now - occurred_at).total_seconds() / 3600, 0.0)
-            decay = exp(-hours_ago / 6.0)
-            weighted = float(event.weight) * decay
-            event_totals[event.song.navidrome_song_id] += weighted
-            if (
-                location
-                and event.location
-                and event.location.strip().lower() == location.strip().lower()
-            ):
-                regional_totals[event.song.navidrome_song_id] += weighted
+    def _ensure_user_exists(self, user_id: int) -> None:
+        if self.repository.users.get_by_id(user_id) is None:
+            raise ValueError("user_not_found")
 
-        scored: list[schemas.TrendingSongOut] = []
-        for song in songs:
-            playlist_signal = (
-                playlist_stats.get(song.playlist_id) if song.playlist_id else None
-            )
-            momentum = event_totals.get(song.navidrome_song_id, 0.0)
-            regional = regional_totals.get(song.navidrome_song_id, 0.0) * 12.0
-            youtube_boost, youtube_metadata = self.ranking_engine._youtube_trend_boost(
-                song,
-                youtube_trends,
-            )
-            social = (
-                ((playlist_signal.save_count if playlist_signal else 0) * 0.8)
-                + ((playlist_signal.share_count if playlist_signal else 0) * 0.4)
-                + (song.like_count_7d * 0.2)
-            )
-            hot_score = (
-                momentum * 100
-                + regional
-                + social
-                + (song.play_count_7d * 0.05)
-                - (song.skip_rate * 10)
-                + youtube_boost * 0.15
-            )
-            scored.append(
-                schemas.TrendingSongOut(
-                    song_id=song.navidrome_song_id,
-                    title=song.title,
-                    artist=song.artist,
-                    genre=song.genre,
-                    qenet_mode=song.qenet_mode,
-                    country=song.country,
-                    hot_score=round(hot_score, 4),
-                    momentum_score=round(momentum * 100, 4),
-                    regional_boost=round(regional, 4),
-                    social_proof=round(social, 4),
-                    source="youtube+internal" if youtube_metadata else "internal",
-                    source_metadata=youtube_metadata,
-                )
-            )
-
-        scored.sort(key=lambda item: item.hot_score, reverse=True)
-        return schemas.TrendingFeedResponse(
-            location=location,
-            generated_at=datetime.utcnow().isoformat(),
-            recommendations=scored[:limit],
+    def _serialize_ranked_song(self, ranked: RankedSong) -> schemas.RecommendationSong:
+        return schemas.RecommendationSong(
+            song_id=ranked.song.navidrome_song_id,
+            title=ranked.song.title,
+            artist=ranked.song.artist,
+            genre=ranked.song.genre,
+            stream_url=ranked.song.stream_path,
+            score=ranked.score,
+            reasons=ranked.reasons,
+            breakdown=ranked.breakdown,
+            source="internal",
+            source_metadata={},
         )
 
-    def _lookalikes(
-        self,
-        user_id: int,
-        vector: TasteVector,
-    ) -> list[schemas.LookalikeUserOut]:
-        results: list[schemas.LookalikeUserOut] = []
-        for peer in self.repository.users.list_peers(user_id):
-            peer_vector = self.ranking_engine.build_taste_vector(peer)
-            similarity = self.ranking_engine._cosine_similarity(vector, peer_vector)
-            if similarity > 0:
-                results.append(
-                    schemas.LookalikeUserOut(
-                        user_id=peer.id,
-                        similarity=round(similarity, 4),
-                    )
-                )
-        return sorted(results, key=lambda item: item.similarity, reverse=True)[:5]
+    def _trending_hot_score(self, song: models.LibrarySong, stats: dict[str, object]) -> float:
+        play_count = float(stats.get("play_count", song.play_count_7d))
+        completion_rate = float(stats.get("completion_rate", 0.0))
+        skip_rate = float(stats.get("skip_rate", song.skip_rate))
+        return play_count * 0.55 + completion_rate * 35.0 + (1.0 - min(skip_rate, 1.0)) * 10.0
