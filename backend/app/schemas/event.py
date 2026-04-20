@@ -1,24 +1,20 @@
-from __future__ import annotations
-
 from datetime import datetime
-from typing import Literal
-
-from pydantic import BaseModel, Field
+from typing import Literal, Optional
+from pydantic import BaseModel, ConfigDict
 
 PlaybackEventType = Literal["play", "skip", "complete"]
 
-
 class PlaybackEventCreate(BaseModel):
-    song_id: str = Field(..., min_length=1, max_length=255)
-    session_id: int | None = Field(default=None, ge=1)
-
+    song_id: int
+    event_type: PlaybackEventType
+    session_id: Optional[str] = None
 
 class PlaybackEventResponse(BaseModel):
-    recorded: bool
-    event_id: int | None = None
-    session_id: int | None = None
-    event_type: PlaybackEventType | None = None
-    song_id: str
-    timestamp: datetime | None = None
-    user_id: int | None = None
-    updated_taste_vector: dict[str, object] | None = None
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    song_id: int
+    event_type: str
+    session_id: Optional[str] = None
+    timestamp: datetime

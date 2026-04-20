@@ -1,57 +1,95 @@
-from __future__ import annotations
-
-from datetime import datetime
-from typing import Any
-
-from pydantic import BaseModel, Field
-
-
-class RecommendationBreakdown(BaseModel):
-    completion_rate: float
-    skip_rate: float
-    popularity: float
-    recency: float
-    diversity_adjustment: float
-    session_penalty: float
-
+from typing import List, Optional
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy.orm import Session
+from app.models.song import LibrarySong
+from app.models.playback import get_user_recent_events
 
 class RecommendationSong(BaseModel):
-    song_id: str
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    navidrome_song_id: str
     title: str
     artist: str
     genre: str
-    stream_url: str | None = None
-    score: float
-    reasons: list[str] = Field(default_factory=list)
-    breakdown: RecommendationBreakdown
-    source: str = "internal"
-    source_metadata: dict[str, Any] = Field(default_factory=dict)
+    cover_art_path: Optional[str] = None
 
+class RecommendationNextResponse(RecommendationSong):
+    pass
+
+class RecommendationBreakdown(BaseModel):
+    reason: str
+    score: float
 
 class RecommendationHomeResponse(BaseModel):
-    generated_at: datetime
-    recommendations: list[RecommendationSong]
+    sections: List[dict]
 
-
-class RecommendationNextResponse(BaseModel):
-    generated_at: datetime
-    current_song_id: str
-    recommendations: list[RecommendationSong]
-
-
-class TrendingSongResponse(BaseModel):
-    song_id: str
-    title: str
-    artist: str
-    genre: str
-    stream_url: str | None = None
-    play_count: int
-    completion_rate: float
-    skip_rate: float
-    hot_score: float
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
+class TrendingSongResponse(RecommendationSong):
+    play_count_7d: int
 
 class TrendingResponse(BaseModel):
-    generated_at: datetime
-    recommendations: list[TrendingSongResponse]
+    songs: List[TrendingSongResponse]
+
+# 🔵 Layer 1: Candidate Generation
+def get_candidate_songs(db: Session, current_song_id: int):
+    current_song = db.query(LibrarySong).filter(LibrarySong.id == current_song_id).first()
+
+    if not current_song:
+        return []
+
+    candidates = (
+        db.query(LibrarySong)
+        .filter(LibrarySong.genre == current_song.genre)
+        .limit(100)
+        .all()
+    )
+
+    return candidates
+
+
+# 🟡 Layer 2: Ranking
+def rank_songs(db: Session, user_id: int, songs):
+    events = get_user_recent_events(db, user_id)
+
+    skip_songs = {str(e.song_id) for e in events if e.event_type == "skip"}
+
+    ranked = []
+    for song in songs:
+        score = 0
+
+        if str(song.id) not in skip_songs and song.navidrome_song_id not in skip_songs:
+            score += 10
+
+        if song.play_count_7d:
+            score += song.play_count_7d * 0.1
+
+        ranked.append((song, score))
+
+    ranked.sort(key=lambda x: x[1], reverse=True)
+
+    return [s[0] for s in ranked]
+
+
+# 🔴 Layer 3: Session Optimization
+def optimize_session(songs):
+    seen_artists = set()
+    final = []
+
+    for song in songs:
+        if song.artist not in seen_artists:
+            final.append(song)
+            seen_artists.add(song.artist)
+
+        if len(final) >= 10:
+            break
+
+    return final
+
+
+# 🎯 Main function
+def get_next_song(db: Session, user_id: int, current_song_id: int):
+    candidates = get_candidate_songs(db, current_song_id)
+    ranked = rank_songs(db, user_id, candidates)
+    optimized = optimize_session(ranked)
+
+    return optimized[0] if optimized else None

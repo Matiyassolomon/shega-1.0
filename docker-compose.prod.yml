@@ -1,0 +1,270 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: music-platform-postgres
+    environment:
+      POSTGRES_DB: music_platform
+      POSTGRES_USER: ${POSTGRES_USER:-music_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secure_password}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/init-db:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-music_user} -d music_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - music-platform-network
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: music-platform-redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - music-platform-network
+    restart: unless-stopped
+
+  # RabbitMQ for Celery
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: music-platform-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-admin}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-admin}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    ports:
+      - "5672:5672"     # AMQP port
+      - "15672:15672"   # Management UI
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - music-platform-network
+    restart: unless-stopped
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    container_name: music-platform-backend
+    environment:
+      # Database
+      DATABASE_URL: postgresql://${POSTGRES_USER:-music_user}:${POSTGRES_PASSWORD:-secure_password}@postgres:5432/music_platform
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-20}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-30}
+      
+      # Cache
+      REDIS_ENABLED: "true"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      
+      # Celery
+      CELERY_BROKER_URL: amqp://${RABBITMQ_USER:-admin}:${RABBITMQ_PASS:-admin}@rabbitmq:5672/
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      
+      # Application
+      APP_ENV: production
+      DEBUG: "false"
+      LOG_LEVEL: INFO
+      SECRET_KEY: ${SECRET_KEY:-production-secret-key-change-me}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      
+      # Payment Providers
+      PAYMENT_ENABLED: "true"
+      TELEBIRR_ENABLED: ${TELEBIRR_ENABLED:-true}
+      CHAPA_ENABLED: ${CHAPA_ENABLED:-true}
+      
+      # Telebirr Configuration
+      TELEBIRR_BASE_URL: ${TELEBIRR_BASE_URL:-https://api.telebirr.et}
+      TELEBIRR_APP_ID: ${TELEBIRR_APP_ID}
+      TELEBIRR_APP_SECRET: ${TELEBIRR_APP_SECRET}
+      TELEBIRR_MERCHANT_CODE: ${TELEBIRR_MERCHANT_CODE}
+      
+    env_file:
+      - .env.production
+    volumes:
+      - backend_logs:/app/logs
+      - ./backend/media:/app/media
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - music-platform-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # Celery Workers
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    container_name: music-platform-celery
+    command: celery -A app.core.celery worker --loglevel=info --concurrency=4
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-music_user}:${POSTGRES_PASSWORD:-secure_password}@postgres:5432/music_platform
+      REDIS_ENABLED: "true"
+      REDIS_HOST: redis
+      CELERY_BROKER_URL: amqp://${RABBITMQ_USER:-admin}:${RABBITMQ_PASS:-admin}@rabbitmq:5672/
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      APP_ENV: production
+      DEBUG: "false"
+    env_file:
+      - .env.production
+    volumes:
+      - backend_logs:/app/logs
+      - ./backend/media:/app/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - music-platform-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  # Celery Beat Scheduler
+  celery_beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    container_name: music-platform-celery-beat
+    command: celery -A app.core.celery beat --loglevel=info
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-music_user}:${POSTGRES_PASSWORD:-secure_password}@postgres:5432/music_platform
+      REDIS_ENABLED: "true"
+      REDIS_HOST: redis
+      CELERY_BROKER_URL: amqp://${RABBITMQ_USER:-admin}:${RABBITMQ_PASS:-admin}@rabbitmq:5672/
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      APP_ENV: production
+      DEBUG: "false"
+    env_file:
+      - .env.production
+    volumes:
+      - backend_logs:/app/logs
+      - ./backend/media:/app/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - music-platform-network
+    restart: unless-stopped
+
+  # Nginx Load Balancer & Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: music-platform-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./backend/media:/app/media:ro
+    depends_on:
+      - backend
+    networks:
+      - music-platform-network
+    restart: unless-stopped
+
+  # Prometheus Monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: music-platform-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    networks:
+      - music-platform-network
+    restart: unless-stopped
+
+  # Grafana Dashboard
+  grafana:
+    image: grafana/grafana:latest
+    container_name: music-platform-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    depends_on:
+      - prometheus
+    networks:
+      - music-platform-network
+    restart: unless-stopped
+
+networks:
+  music-platform-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  backend_logs:
+  prometheus_data:
+  grafana_data:
