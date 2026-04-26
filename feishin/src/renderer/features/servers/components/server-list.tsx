@@ -6,7 +6,6 @@ import { isServerLock } from '/@/renderer/features/action-required/utils/window-
 import JellyfinLogo from '/@/renderer/features/servers/assets/jellyfin.png';
 import NavidromeLogo from '/@/renderer/features/servers/assets/navidrome.png';
 import OpenSubsonicLogo from '/@/renderer/features/servers/assets/opensubsonic.png';
-import MusicPlatformLogo from '/@/renderer/features/servers/assets/music-platform.png';
 import { AddServerForm } from '/@/renderer/features/servers/components/add-server-form';
 import { IgnoreCorsSslSwitches } from '/@/renderer/features/servers/components/ignore-cors-ssl-switches';
 import { ServerListItem } from '/@/renderer/features/servers/components/server-list-item';

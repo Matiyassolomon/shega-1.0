@@ -13,8 +13,9 @@ import {
     RelatedArtist,
     Song,
     User,
+    ServerType,
 } from '/@/shared/types/domain-types';
-import { ServerListItem, ServerType } from '/@/shared/types/types';
+import { ServerListItem } from '/@/shared/types/types';
 
 const getImageUrl = (args: { url: null | string }) => {
     const { url } = args;

@@ -4,7 +4,7 @@ Redis caching layer for improved performance and scalability.
 
 import os
 import json
-import pickle
+import time
 from typing import Any, Optional, Union
 from functools import wraps
 import logging
@@ -31,6 +31,7 @@ class CacheConfig:
         self.password = os.getenv("REDIS_PASSWORD", None)
         self.default_ttl = int(os.getenv("REDIS_DEFAULT_TTL", "3600"))  # 1 hour
         self.connection_timeout = int(os.getenv("REDIS_CONNECTION_TIMEOUT", "5"))
+        self.max_memory_items = int(os.getenv("CACHE_MAX_MEMORY_ITEMS", "10000"))
         
     def is_configured(self) -> bool:
         """Check if Redis is properly configured."""
@@ -40,11 +41,11 @@ class CacheConfig:
 cache_config = CacheConfig()
 
 class CacheManager:
-    """Universal cache manager supporting Redis and in-memory fallback."""
+    """Universal cache manager supporting Redis and in-memory fallback with TTL."""
     
     def __init__(self):
         self._redis_client = None
-        self._memory_cache = {}
+        self._memory_cache = {}  # key -> (value, expiry_timestamp)
         self._initialize_client()
     
     def _initialize_client(self):
@@ -73,6 +74,20 @@ class CacheManager:
         """Generate namespaced cache key."""
         return f"{prefix}:{key}"
     
+    def _evict_expired(self):
+        """Remove expired entries from in-memory cache."""
+        now = time.time()
+        expired = [k for k, (_, exp) in self._memory_cache.items() if exp and exp < now]
+        for k in expired:
+            del self._memory_cache[k]
+        
+        # Hard cap to prevent unbounded growth
+        if len(self._memory_cache) > cache_config.max_memory_items:
+            # Remove oldest entries (simple LRU: first N keys)
+            to_remove = len(self._memory_cache) - cache_config.max_memory_items
+            for k in list(self._memory_cache.keys())[:to_remove]:
+                del self._memory_cache[k]
+    
     def get(self, key: str, default: Any = None) -> Any:
         """Get value from cache."""
         try:
@@ -83,8 +98,16 @@ class CacheManager:
                     return json.loads(value)
                 return default
             else:
-                # In-memory cache
-                return self._memory_cache.get(key, default)
+                # In-memory cache with TTL check
+                self._evict_expired()
+                entry = self._memory_cache.get(key)
+                if entry is None:
+                    return default
+                value, expiry = entry
+                if expiry and expiry < time.time():
+                    del self._memory_cache[key]
+                    return default
+                return value
         except Exception as e:
             logger.error(f"Cache get error: {e}")
             return default
@@ -100,8 +123,10 @@ class CacheManager:
                 self._redis_client.setex(full_key, ttl, serialized)
                 return True
             else:
-                # In-memory cache (no TTL support)
-                self._memory_cache[key] = value
+                # In-memory cache with TTL tracking
+                self._evict_expired()
+                expiry = time.time() + ttl if ttl else None
+                self._memory_cache[key] = (value, expiry)
                 return True
         except Exception as e:
             logger.error(f"Cache set error: {e}")

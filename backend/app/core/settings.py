@@ -37,8 +37,10 @@ class AppSettings:
             _get_env("APP_TITLE", "Music Platform Backend") or "Music Platform Backend"
         )
         self.app_version = _get_env("APP_VERSION", "1.0.0") or "1.0.0"
-        self.secret_key = _get_env("SECRET_KEY", "dev-secret-key-change-me")
-        self.admin_api_key = _get_env("ADMIN_API_KEY", "admin123") or "admin123"
+        dev_secret = "dev-secret-key-change-me"
+        self.secret_key = _get_env("SECRET_KEY", dev_secret) or dev_secret
+        dev_admin_key = "admin123"
+        self.admin_api_key = _get_env("ADMIN_API_KEY", dev_admin_key) or dev_admin_key
         self.database_url = (
             _get_env("DATABASE_URL", "sqlite:///./music_platform.db")
             or "sqlite:///./music_platform.db"
@@ -142,11 +144,13 @@ class AppSettings:
             raise ValueError("YOUTUBE_TRENDS_TTL_SECONDS must be greater than 0")
 
         if self.is_production:
-            if self.secret_key == "dev-secret-key-change-me":
+            secret_key_from_env = _get_env("SECRET_KEY")
+            admin_key_from_env = _get_env("ADMIN_API_KEY")
+            if not secret_key_from_env or self.secret_key == "dev-secret-key-change-me":
                 raise ValueError(
                     "SECRET_KEY must be set to a strong value in production"
                 )
-            if self.admin_api_key == "admin123":
+            if not admin_key_from_env or self.admin_api_key == "admin123":
                 raise ValueError("ADMIN_API_KEY must be changed in production")
             if not self.is_postgres:
                 raise ValueError("Production requires a PostgreSQL DATABASE_URL")

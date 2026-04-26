@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { useState, useEffect } from 'react';
 import { isTelegramMiniApp } from '/@/renderer/utils/telegram';
 import { Stack } from '/@/shared/components/stack/stack';

@@ -8,7 +8,6 @@ import { isTelegramMiniApp } from '/@/renderer/utils/telegram';
 const NowPlayingRoute = lazy(
     () => import('/@/renderer/features/consumer/screens/now-playing-screen'),
 );
-const HomeRoute = lazy(() => import('/@/renderer/features/consumer/screens/home-screen'));
 const ConsumerSearchRoute = lazy(
     () => import('/@/renderer/features/consumer/screens/search-screen'),
 );
@@ -16,9 +15,6 @@ const ConsumerLibraryRoute = lazy(
     () => import('/@/renderer/features/consumer/screens/library-screen'),
 );
 
-// Original pages
-const MarketplacePage = lazy(() => import('/@/renderer/pages/Marketplace'));
-const PaymentsPage = lazy(() => import('/@/renderer/pages/Payments'));
 const ProfilePage = lazy(() => import('/@/renderer/pages/Profile'));
 
 // Aligned pages (current working implementation)
@@ -70,27 +66,25 @@ export const consumerRoutes = (
         <Route element={<MusicPlatformHome />} path={AppRoute.SETTINGS} />
         
         {/* Implementation-based routing */}
-        <Route 
-            element={() => {
-                const impl = getImplementationType();
-                if (impl === 'refactored') {
-                    return <RefactoredMarketplacePage />;
-                } else {
-                    return <AlignedMarketplacePage />;
-                }
-            }} 
-            path={AppRoute.MARKETPLACE} 
+        <Route
+            element={
+                getImplementationType() === 'refactored' ? (
+                    <RefactoredMarketplacePage />
+                ) : (
+                    <AlignedMarketplacePage />
+                )
+            }
+            path={AppRoute.MARKETPLACE}
         />
-        <Route 
-            element={() => {
-                const impl = getImplementationType();
-                if (impl === 'refactored') {
-                    return <RefactoredPaymentsPage />;
-                } else {
-                    return <AlignedPaymentsPage />;
-                }
-            }} 
-            path={AppRoute.PAYMENTS} 
+        <Route
+            element={
+                getImplementationType() === 'refactored' ? (
+                    <RefactoredPaymentsPage />
+                ) : (
+                    <AlignedPaymentsPage />
+                )
+            }
+            path={AppRoute.PAYMENTS}
         />
         
         <Route element={<ProfilePage />} path={AppRoute.PROFILE} />

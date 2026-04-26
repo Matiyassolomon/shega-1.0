@@ -213,6 +213,88 @@ export const canPlaySong = async (userId: string, songId: string) => {
     return data as { allowed: boolean };
 };
 
+export interface PlaybackStartResponse {
+    status: 'PLAYING' | 'PAYMENT_REQUIRED';
+    song?: {
+        id: string;
+        title: string;
+        artist: string;
+        album?: string;
+        duration?: number;
+        album_art?: string;
+    };
+    stream?: {
+        url: string;
+        quality: string;
+        bitrate: number;
+        codec: string;
+        quality_reason: string;
+        can_upgrade: boolean;
+    };
+    session?: {
+        id: string;
+        started_at: string;
+        expires_at: string;
+    };
+    access?: {
+        type: string;
+        is_owned: boolean;
+    };
+    limits?: {
+        max_concurrent_streams: number;
+        current_active_streams: number;
+        remaining_streams: number;
+    };
+    message?: string;
+    song_preview?: {
+        id: string;
+        title: string;
+        artist: string;
+        preview_url: string;
+        preview_duration: number;
+    };
+    purchase_options?: {
+        individual: {
+            price: number;
+            currency: string;
+            purchase_url: string;
+        };
+        subscription: {
+            available: boolean;
+            tiers: string[];
+            upgrade_url: string;
+        };
+    };
+}
+
+export const startPlayback = async (payload: {
+    device_id: string;
+    current_song_id?: string;
+    network_type?: string;
+    network_quality?: number;
+}) => {
+    const { data } = await backendClient.post<PlaybackStartResponse>('/playback/start', payload, {
+        headers: {
+            'X-Network-Type': payload.network_type || 'wifi',
+            'X-Network-Quality': String(payload.network_quality || 1.0),
+        },
+    });
+    return data;
+};
+
+export const playbackHeartbeat = async (sessionId: string, positionMs: number) => {
+    const { data } = await backendClient.post('/playback/heartbeat', {
+        session_id: sessionId,
+        position_ms: positionMs,
+    });
+    return data as { ok: boolean; session_active: boolean };
+};
+
+export const stopPlayback = async (sessionId: string) => {
+    const { data } = await backendClient.post('/playback/stop', { session_id: sessionId });
+    return data as { stopped: boolean; session_id: string };
+};
+
 export const createPayment = async (payload: {
     amount: number;
     method: 'cbe' | 'telebirr';

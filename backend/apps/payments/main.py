@@ -1,4 +1,4 @@
-"""
+ """
 Payment domain main module.
 
 This module initializes the payment domain with all its components

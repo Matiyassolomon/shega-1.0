@@ -8,8 +8,8 @@ import {
     useRadioPlayer,
 } from '/@/renderer/features/radio/hooks/use-radio-player';
 import { usePlayerSong, usePlayerStore } from '/@/renderer/store';
-import { LibraryItem, QueueSong } from '/@/shared/types/domain-types';
-import { PlayerShuffle, ServerType } from '/@/shared/types/types';
+import { LibraryItem, QueueSong, ServerType } from '/@/shared/types/domain-types';
+import { PlayerShuffle } from '/@/shared/types/types';
 
 const ipc = isElectron() ? window.api.ipc : null;
 const utils = isElectron() ? window.api.utils : null;

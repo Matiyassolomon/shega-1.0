@@ -341,6 +341,7 @@ export const processPayment = async (paymentId: number, payload: {
     payment_provider?: string;
     return_url?: string;
 }) => {
+    void payload;
     // Map to legacy payment confirmation
     return confirmPayment({
         payment_id: paymentId

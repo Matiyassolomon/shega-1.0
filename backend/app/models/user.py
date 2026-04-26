@@ -25,6 +25,16 @@ class User(Base):
     playback_events = relationship("PlaybackEvent", back_populates="user")
     playlist_saves = relationship("UserPlaylistSave", back_populates="user")
     listening_sessions = relationship("PlaybackSession", back_populates="user")
+    stream_sessions = relationship("StreamSession", back_populates="user")
+    
+    @property
+    def subscription_tier(self) -> str:
+        """Get active subscription tier or 'free'"""
+        for sub in self.subscriptions:
+            if sub.status == "active":
+                # TODO: Map subscription plan to tier (premium, premium_plus, etc.)
+                return "premium"  # Default to premium for now
+        return "free"
 
 
 class Subscription(Base):

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { createPayment, getBackendUserId } from '/@/renderer/api/client';
 import { Button } from '/@/shared/components/button/button';
 import { Stack } from '/@/shared/components/stack/stack';

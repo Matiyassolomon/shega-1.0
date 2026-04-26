@@ -8,6 +8,7 @@ from app.models.commerce import (
 )
 from app.models.playback import PlaybackEvent, UserPlaybackLog
 from app.models.session import ListeningSession, PlaybackSession, Session, SessionRecommendationEvent
+from app.models.stream_session import StreamSession
 from app.models.song import (
     LibrarySong,
     MusicMetadata,
@@ -33,6 +34,7 @@ __all__ = [
     "Session",
     "SongMarketplace",
     "SongPurchase",
+    "StreamSession",
     "Subscription",
     "User",
     "UserPlaybackLog",

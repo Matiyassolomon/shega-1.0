@@ -19,8 +19,11 @@ import {
 } from '/@/renderer/store';
 import { Center } from '/@/shared/components/center/center';
 import { Spinner } from '/@/shared/components/spinner/spinner';
-import { AuthenticationResponse, ServerListItemWithCredential } from '/@/shared/types/domain-types';
-import { ServerType } from '/@/shared/types/types';
+import {
+    AuthenticationResponse,
+    ServerListItemWithCredential,
+    ServerType,
+} from '/@/shared/types/domain-types';
 
 const localSettings = isElectron() ? window.api.localSettings : null;
 const normalizeUrl = (url: string) => url.replace(/\/$/, '');

@@ -16,7 +16,7 @@
 5. [Payment System Tests](#payment-system-tests)
 6. [Marketplace Tests](#marketplace-tests)
 7. [Database & Cache Tests](#database--cache-tests)
-8. [Recommendation Tests](#recommendation-tests)
+8. [Recommendation System Tests](#recommendation-system-tests)
 9. [Integration Tests](#integration-tests)
 10. [Troubleshooting](#troubleshooting)
 
@@ -503,41 +503,222 @@ curl -s -X POST http://localhost:8000/admin/cache-test \
 
 ---
 
-## Recommendation Tests
+## Recommendation System Tests
 
-### Test 16: Get Recommendations
+### Test 16: Get Next Song Recommendation
 ```bash
-curl -s "http://localhost:8000/recommendations/playlists?user_id=1&location=Addis%20Ababa" | jq .
+curl -s "http://localhost:8000/recommendations/next?user_id=1&current_song_id=song_123" | jq .
 ```
 
 **Expected Output:**
 ```json
 {
+  "generated_at": "2024-04-20T10:00:00Z",
+  "current_song_id": "song_123",
   "recommendations": [
     {
-      "id": "rec_123",
-      "type": "playlist",
-      "title": "Ethiopian Hip Hop Mix",
-      "confidence": 0.95,
-      "reason": "Based on your listening history",
-      "playlist_id": "playlist_456"
+      "song_id": "song_456",
+      "title": "Ethiopian Jazz Classic",
+      "artist": "Mulatu Astatke",
+      "genre": "Jazz",
+      "score": 87.5,
+      "reasons": ["High completion rate", "Genre match: Jazz"],
+      "breakdown": {
+        "completion_rate": 0.85,
+        "skip_rate": 0.05,
+        "popularity": 15.0,
+        "recency": 8.5,
+        "diversity_adjustment": 0.0,
+        "session_penalty": 0.0
+      },
+      "source": "internal"
     }
-  ],
-  "generated_at": "2024-04-20T10:00:00Z",
-  "user_id": 1
+  ]
 }
 ```
 
 **✅ Success Criteria:**
-- Recommendations array is present
-- Each has confidence score
-- Generated timestamp is recent
+- Single recommendation returned
+- Score breakdown present
+- Reasons explain the recommendation
+- Source field indicates origin (internal/youtube/exploration)
+
+---
+
+### Test 17: Get Personalized "For You" Feed
+```bash
+curl -s "http://localhost:8000/recommendations/for-you?user_id=1&limit=12&location=ET" | jq .
+```
+
+**Expected Output:**
+```json
+{
+  "generated_at": "2024-04-20T10:00:00Z",
+  "recommendations": [
+    {
+      "song_id": "song_789",
+      "title": "Tizita",
+      "artist": "Teddy Afro",
+      "genre": "Pop",
+      "score": 92.3,
+      "reasons": ["High completion rate", "Trending"],
+      "breakdown": {
+        "completion_rate": 0.88,
+        "skip_rate": 0.02,
+        "popularity": 18.0,
+        "recency": 9.5,
+        "diversity_adjustment": 4.0,
+        "session_penalty": 0.0
+      },
+      "source": "internal",
+      "source_metadata": {
+        "base_score": 80.3,
+        "youtube_boost": 12.0
+      }
+    }
+  ]
+}
+```
+
+**✅ Success Criteria:**
+- 12 recommendations returned (or specified limit)
+- Mix of sources (80% exploitation, 20% exploration)
+- Score breakdowns show all components
+- YouTube boost present when applicable
+
+---
+
+### Test 18: Get Trending Songs
+```bash
+curl -s "http://localhost:8000/recommendations/trending?location=ET&limit=12" | jq .
+```
+
+**Expected Output:**
+```json
+{
+  "generated_at": "2024-04-20T10:00:00Z",
+  "recommendations": [
+    {
+      "song_id": "song_101",
+      "title": "Hot New Track",
+      "artist": "New Artist",
+      "genre": "Hip Hop",
+      "stream_url": "/stream/song_101",
+      "play_count": 1523,
+      "completion_rate": 0.82,
+      "skip_rate": 0.08,
+      "hot_score": 85.4,
+      "metadata": {
+        "source": "internal",
+        "location": "ET"
+      }
+    }
+  ]
+}
+```
+
+**✅ Success Criteria:**
+- Songs ordered by hot score
+- Play counts from last 24h
+- Completion/skip rates accurate
+- Metadata shows source and location
+
+---
+
+### Test 19: Record Recommendation Feedback
+```bash
+curl -s -X POST "http://localhost:8000/recommendations/feedback?user_id=1&song_id=song_123&action=completed" | jq .
+```
+
+**Expected Output:**
+```json
+{
+  "status": "recorded",
+  "user_id": 1,
+  "song_id": "song_123",
+  "action": "completed"
+}
+```
+
+**✅ Success Criteria:**
+- Feedback recorded successfully
+- Playback event created
+- User cache invalidated
+- Returns confirmation
+
+---
+
+### Test 20: Get Location-Based Trending
+```bash
+# Country-level trending
+curl -s "http://localhost:8000/recommendations/trending?location=ET&location_level=country&limit=10" | jq .
+
+# City-level trending
+curl -s "http://localhost:8000/recommendations/trending?location=Addis%20Ababa&location_level=city&limit=10" | jq .
+```
+
+**Expected Output:**
+```json
+{
+  "generated_at": "2024-04-20T10:00:00Z",
+  "recommendations": [
+    {
+      "song_id": "song_202",
+      "title": "Addis Song",
+      "artist": "Local Artist",
+      "hot_score": 92.1,
+      "metadata": {
+        "source": "internal",
+        "location": "Addis Ababa"
+      }
+    }
+  ]
+}
+```
+
+**✅ Success Criteria:**
+- Location filter applied
+- Metadata reflects location level
+- Hot scores calculated for region
+- Results differ from global trending
+
+---
+
+### Test 21: Check Recommendation System Stats
+```bash
+curl -s "http://localhost:8000/recommendations/stats" | jq .
+```
+
+**Expected Output:**
+```json
+{
+  "youtube_integration": {
+    "enabled": true,
+    "weight": 0.2,
+    "max_boost": 20.0
+  },
+  "architecture": "4-layer (Candidates -> Ranking -> Session -> Exploration)",
+  "exploration_rate": "20%",
+  "caching": "Enabled (Redis/Memory fallback)",
+  "endpoints": [
+    "/recommendations/next",
+    "/recommendations/for-you",
+    "/recommendations/trending"
+  ]
+}
+```
+
+**✅ Success Criteria:**
+- YouTube integration status shown
+- 20% weight confirmed
+- 4-layer architecture documented
+- All endpoints listed
 
 ---
 
 ## Integration Tests
 
-### Test 17: Full Payment Flow
+### Test 22: Full Payment Flow
 ```bash
 # Step 1: Create payment
 echo "=== Step 1: Creating Payment ==="
@@ -614,6 +795,59 @@ curl -s http://localhost:5173/api/health | jq .
 - Same response as direct backend call
 - No proxy errors
 - Frontend and backend are connected
+
+---
+
+### Test 24: Full Recommendation Flow
+```bash
+echo "=== Step 1: Get Personalized Feed ==="
+FEED=$(curl -s "http://localhost:8000/recommendations/for-you?user_id=1&limit=5")
+echo $FEED | jq .
+
+# Extract first song ID
+SONG_ID=$(echo $FEED | jq -r '.recommendations[0].song_id')
+echo "Selected song: $SONG_ID"
+
+echo "=== Step 2: Get Next Song Recommendation ==="
+curl -s "http://localhost:8000/recommendations/next?user_id=1&current_song_id=$SONG_ID" | jq .
+
+echo "=== Step 3: Record Feedback (Completed) ==="
+curl -s -X POST "http://localhost:8000/recommendations/feedback?user_id=1&song_id=$SONG_ID&action=completed" | jq .
+
+echo "=== Step 4: Get Trending (Verify Feedback Processed) ==="
+curl -s "http://localhost:8000/recommendations/trending?limit=5" | jq .
+```
+
+**Expected Output:**
+```
+=== Step 1: Get Personalized Feed ===
+{
+  "recommendations": [
+    {"song_id": "song_123", "title": "Test Song", ...}
+  ]
+}
+Selected song: song_123
+
+=== Step 2: Get Next Song Recommendation ===
+{
+  "current_song_id": "song_123",
+  "recommendations": [{"song_id": "song_456", ...}]
+}
+
+=== Step 3: Record Feedback (Completed) ===
+{"status": "recorded", "user_id": 1, "song_id": "song_123", "action": "completed"}
+
+=== Step 4: Get Trending (Verify Feedback Processed) ===
+{
+  "recommendations": [...]
+}
+```
+
+**✅ Success Criteria:**
+- Personalized feed returns 5 songs
+- Next recommendation provides context-aware song
+- Feedback recorded successfully
+- Trending updated (may not reflect immediately)
 
 ---
 
@@ -710,6 +944,16 @@ cat .env.production | grep TELEBIRR
 - [ ] Marketplace items are listed
 - [ ] Playlist purchase works
 - [ ] Download URLs are generated
+
+### ✅ Recommendation System
+- [ ] Next song recommendation works
+- [ ] Personalized "For You" feed returns 12 songs
+- [ ] Trending songs are ordered by hot score
+- [ ] Location-based trending works (country/city)
+- [ ] Recommendation feedback is recorded
+- [ ] YouTube integration shows 20% weight
+- [ ] Score breakdowns explain recommendations
+- [ ] Session optimization (no repeats) works
 
 ### ✅ Monitoring
 - [ ] Database stats are available

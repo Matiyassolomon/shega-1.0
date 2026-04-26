@@ -27,7 +27,11 @@ import { Text } from '/@/shared/components/text/text';
 import { toast } from '/@/shared/components/toast/toast';
 import { useFocusTrap } from '/@/shared/hooks/use-focus-trap';
 import { useForm } from '/@/shared/hooks/use-form';
-import { AuthenticationResponse, ServerListItemWithCredential } from '/@/shared/types/domain-types';
+import {
+    AuthenticationResponse,
+    ServerListItemWithCredential,
+    ServerType as DomainServerType,
+} from '/@/shared/types/domain-types';
 import { DiscoveredServerItem, ServerType, toServerType } from '/@/shared/types/types';
 
 const autodiscover = isElectron() ? window.api.autodiscover : null;
@@ -82,6 +86,10 @@ const SERVER_TYPES: Record<ServerType, ServerDetails> = {
     [ServerType.SUBSONIC]: {
         icon: SubsonicIcon,
         name: 'OpenSubsonic',
+    },
+    [ServerType.MUSIC_PLATFORM]: {
+        icon: NavidromeIcon,
+        name: 'Music Platform',
     },
 };
 
@@ -153,7 +161,7 @@ export const AddServerForm = ({ onCancel }: AddServerFormProps) => {
                     password: values.password,
                     username: values.username,
                 },
-                values.type as ServerType,
+                values.type as DomainServerType,
             );
 
             if (!data) {
@@ -167,7 +175,7 @@ export const AddServerForm = ({ onCancel }: AddServerFormProps) => {
                 id: nanoid(),
                 isAdmin: data.isAdmin,
                 name: values.name,
-                type: values.type as ServerType,
+                type: values.type as DomainServerType,
                 url: values.url.replace(/\/$/, ''),
                 userId: data.userId,
                 username: data.username,

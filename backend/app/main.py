@@ -16,14 +16,15 @@ from app.api.routers import (
     core_router,
     marketplace_router,
     payments_router,
-    recommendations_router,
 )
 from app.api.v1 import api_router as api_v1_router
 from app.api.health import router as health_router
 from app.api.auth import router as auth_router
 from app.core.logging import configure_logging, get_logger
 from app.core.settings import get_settings
+from app.core.middleware import RequestIDMiddleware, TimingMiddleware, SecurityHeadersMiddleware, get_request_id
 from app.db import Base, SessionLocal, engine
+from app.db.utils import check_db_health, get_connection_pool_stats
 from app.middleware import (
     CacheMiddleware,
     MaxRequestSizeMiddleware,
@@ -37,28 +38,32 @@ configure_logging(settings.log_level)
 logger = get_logger(__name__)
 
 
-def _ensure_runtime_schema() -> None:
-    """Apply lightweight compatibility DDL for local databases."""
+def _validate_startup_schema() -> None:
+    """Validate required tables exist. Warns about mismatches but never alters schema at runtime."""
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
-    if "playback_events" not in existing_tables:
-        return
-
-    columns = {column["name"] for column in inspector.get_columns("playback_events")}
-    with engine.begin() as connection:
-        if "session_id" not in columns:
-            connection.execute(text("ALTER TABLE playback_events ADD COLUMN session_id INTEGER"))
-        if "event_type" not in columns:
-            connection.execute(text("ALTER TABLE playback_events ADD COLUMN event_type VARCHAR(20)"))
-        if "timestamp" not in columns:
-            connection.execute(text("ALTER TABLE playback_events ADD COLUMN timestamp DATETIME"))
+    required_tables = {
+        "users", "subscriptions", "playback_events", "sessions",
+        "library_songs", "stream_sessions", "song_purchases", "song_marketplace"
+    }
+    missing = required_tables - existing_tables
+    if missing:
+        logger.warning(
+            "startup_schema_missing_tables",
+            missing_tables=sorted(missing),
+            message="Run migrations to create missing tables"
+        )
+    else:
+        logger.info("startup_schema_validated", tables_count=len(existing_tables))
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     logger.info("application_startup")
-    Base.metadata.create_all(bind=engine)
-    _ensure_runtime_schema()
+    # Create tables for local/dev only; production should use migrations
+    if settings.is_sqlite or settings.app_env == "development":
+        Base.metadata.create_all(bind=engine)
+    _validate_startup_schema()
     db = SessionLocal()
     try:
         crud.ensure_seed_data(db)
@@ -153,14 +158,45 @@ def health():
 
 @app.get("/health/live")
 def liveness():
-    return {"status": "alive"}
+    """
+    Kubernetes liveness probe.
+    Returns 200 if the process is alive and can accept requests.
+    """
+    return {"status": "alive", "timestamp": datetime.utcnow().isoformat()}
 
 
 @app.get("/health/ready")
-def readiness():
-    with engine.connect() as connection:
-        connection.execute(text("SELECT 1"))
-    return {"status": "ready", "database": "ok"}
+def readiness(db: Session = Depends(get_db)):
+    """
+    Kubernetes readiness probe.
+    Returns 200 only when all dependencies are healthy (database, cache).
+    """
+    # Check database health
+    db_health = check_db_health(db)
+    
+    if not db_health.get("connected"):
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "not_ready",
+                "database": db_health,
+                "request_id": get_request_id()
+            }
+        )
+    
+    # Check cache health
+    from app.core.cache import cache
+    cache_health = cache.health_check()
+    
+    return {
+        "status": "ready",
+        "database": db_health,
+        "cache": cache_health,
+        "pool": get_connection_pool_stats(engine),
+        "request_id": get_request_id(),
+        "timestamp": datetime.utcnow().isoformat()
+    }
 
 
 app.include_router(core_router)
@@ -170,6 +206,13 @@ app.include_router(calendar_router)
 app.include_router(api_v1_router)
 app.include_router(health_router)
 app.include_router(auth_router)
-app.include_router(recommendations_router)
 app.include_router(admin_holidays_router)
 app.include_router(audio_analysis_router)
+
+# Add observability middleware
+app.add_middleware(RequestIDMiddleware)
+app.add_middleware(TimingMiddleware)
+
+# Add security headers middleware
+from app.core.middleware import SecurityHeadersMiddleware
+app.add_middleware(SecurityHeadersMiddleware)
