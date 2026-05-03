@@ -1,11 +1,13 @@
 from contextlib import asynccontextmanager
+from datetime import datetime
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import inspect, text
+from sqlalchemy.orm import Session
 from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -23,7 +25,7 @@ from app.api.auth import router as auth_router
 from app.core.logging import configure_logging, get_logger
 from app.core.settings import get_settings
 from app.core.middleware import RequestIDMiddleware, TimingMiddleware, SecurityHeadersMiddleware, get_request_id
-from app.db import Base, SessionLocal, engine
+from app.db import Base, SessionLocal, engine, get_db
 from app.db.utils import check_db_health, get_connection_pool_stats
 from app.middleware import (
     CacheMiddleware,
