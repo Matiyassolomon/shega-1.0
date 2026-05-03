@@ -24,7 +24,7 @@ class CacheConfig:
     """Cache configuration with Redis support."""
     
     def __init__(self):
-        self.enabled = os.getenv("REDIS_ENABLED", "true").lower() == "true"
+        self.enabled = os.getenv("REDIS_ENABLED", "false").lower() == "true"
         self.host = os.getenv("REDIS_HOST", "localhost")
         self.port = int(os.getenv("REDIS_PORT", "6379"))
         self.db = int(os.getenv("REDIS_DB", "0"))

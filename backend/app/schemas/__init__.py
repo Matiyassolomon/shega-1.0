@@ -257,6 +257,8 @@ class LookalikeUserOut(BaseModel):
 
 
 class PersonalizedFeedResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     user_id: int
     location: str | None
     model_backend: str
@@ -287,6 +289,8 @@ class PlaybackEventIn(BaseModel):
 
 
 class HybridRecommendationResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     date: str
     holiday: str | None
     location: str | None
