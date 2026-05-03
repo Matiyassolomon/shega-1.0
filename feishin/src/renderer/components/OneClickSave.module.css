@@ -1,0 +1,115 @@
+.group {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--theme-spacing-xs);
+}
+
+.button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--theme-colors-foreground-muted);
+    cursor: pointer;
+    background: var(--theme-colors-surface);
+    border: 1px solid var(--theme-colors-border);
+    border-radius: 999px;
+    transition:
+        color 0.2s ease,
+        background-color 0.2s ease,
+        border-color 0.2s ease,
+        transform 0.2s ease,
+        opacity 0.2s ease;
+}
+
+.button:hover:not(:disabled) {
+    color: var(--theme-colors-foreground);
+    background: lighten(var(--theme-colors-surface), 8%);
+}
+
+.withLabel {
+    gap: var(--theme-spacing-xs);
+    font-weight: 600;
+}
+
+.sm {
+    min-width: 28px;
+    min-height: 28px;
+    padding: 6px;
+}
+
+.md {
+    min-width: 36px;
+    min-height: 36px;
+    padding: 8px;
+}
+
+.lg {
+    min-width: 48px;
+    min-height: 48px;
+    padding: 12px;
+}
+
+.inactive {
+    color: var(--theme-colors-foreground-muted);
+}
+
+.likeActive {
+    color: #fff;
+    background: #db2777;
+    border-color: #db2777;
+}
+
+.saveActive {
+    color: #fff;
+    background: var(--theme-colors-primary);
+    border-color: var(--theme-colors-primary);
+}
+
+.loading {
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
+.pulse {
+    animation: pulse 0.45s ease;
+}
+
+.spinner {
+    animation: spin 0.8s linear infinite;
+}
+
+.feedback {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #22c55e;
+    pointer-events: none;
+    transform: translate(-50%, -50%);
+    animation: bounce 0.6s ease;
+}
+
+@keyframes spin {
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@keyframes pulse {
+    50% {
+        transform: scale(1.08);
+    }
+}
+
+@keyframes bounce {
+    50% {
+        transform: translate(-50%, -62%);
+    }
+}

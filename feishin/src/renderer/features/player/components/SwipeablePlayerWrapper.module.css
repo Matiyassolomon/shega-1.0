@@ -1,0 +1,89 @@
+.container {
+    position: relative;
+    touch-action: pan-y;
+}
+
+.hint,
+.preview,
+.feedbackOverlay {
+    position: absolute;
+    left: 50%;
+    z-index: 5;
+    color: #fff;
+    pointer-events: none;
+    transform: translateX(-50%);
+}
+
+.hint {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    color: rgb(255 255 255 / 70%);
+    font-size: var(--theme-font-size-xs);
+}
+
+.hintTop {
+    top: 80px;
+}
+
+.hintBottom {
+    bottom: 128px;
+}
+
+.previewTop {
+    top: 25%;
+}
+
+.previewBottom {
+    bottom: 25%;
+}
+
+.previewIcon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--theme-spacing-md);
+    color: #fff;
+    background: rgb(255 255 255 / 20%);
+    border-radius: 999px;
+    backdrop-filter: blur(12px);
+}
+
+.feedbackOverlay {
+    inset: 0;
+    left: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgb(0 0 0 / 30%);
+    transform: none;
+}
+
+.feedback {
+    padding: var(--theme-spacing-md) 32px;
+    color: #fff;
+    background: rgb(255 255 255 / 20%);
+    border-radius: var(--theme-radius-lg);
+    backdrop-filter: blur(16px);
+}
+
+.feedback p {
+    margin: 0;
+    font-size: var(--theme-font-size-lg);
+    font-weight: 700;
+}
+
+.bounce {
+    animation: bounce 1s infinite;
+}
+
+@keyframes bounce {
+    0%,
+    100% {
+        transform: translateY(-15%);
+    }
+
+    50% {
+        transform: translateY(0);
+    }
+}
