@@ -30,6 +30,13 @@ def _get_csv(name: str, default: list[str]) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _normalize_allowed_hosts(hosts: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for host in hosts:
+        normalized.append(f"*{host}" if host.startswith(".") else host)
+    return normalized
+
+
 class AppSettings:
     def __init__(self) -> None:
         self.app_env = (_get_env("APP_ENV", "development") or "development").lower()
@@ -85,7 +92,9 @@ class AppSettings:
             "http://localhost:5173",
             "http://127.0.0.1:5173",
         ]
-        self.allowed_hosts = _get_csv("ALLOWED_HOSTS", default_hosts)
+        self.allowed_hosts = _normalize_allowed_hosts(
+            _get_csv("ALLOWED_HOSTS", default_hosts)
+        )
         self.allowed_origins = _get_csv("ALLOWED_ORIGINS", default_origins)
 
         self._validate()
