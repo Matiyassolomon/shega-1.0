@@ -1,5 +1,5 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
-from sqlalchemy.orm import relationship, Session
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy.orm import relationship, Session, synonym
 from app.db.base import Base
 from app.utils.helpers import utc_now
 
@@ -11,7 +11,14 @@ class PlaybackEvent(Base):
     song_id = Column(Integer, ForeignKey("library_songs.id"), nullable=False, index=True)
     event_type = Column(String(20), nullable=False)  # play, skip, complete
     session_id = Column(Integer, ForeignKey("sessions.id"), nullable=True)
-    timestamp = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    timestamp = Column("occurred_at", DateTime(timezone=True), nullable=False, default=utc_now)
+    occurred_at = synonym("timestamp")
+    location = Column(String(120), nullable=True)
+    completed_ratio = Column(Float, nullable=False, default=0.0)
+    played_seconds = Column(Float, nullable=False, default=0.0)
+    is_looped = Column(Boolean, nullable=False, default=False)
+    skipped = Column(Boolean, nullable=False, default=False)
+    weight = Column(Float, nullable=False, default=1.0)
 
     user = relationship("User", back_populates="playback_events")
     song = relationship("LibrarySong", back_populates="playback_events")

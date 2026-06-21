@@ -33,4 +33,5 @@ def test_readiness_endpoint(client):
     assert response.status_code == status.HTTP_200_OK
     data = response.json()
     assert data["status"] == "ready"
-    assert data["database"] == "ok"
+    assert data["database"]["status"] == "healthy"
+    assert data["database"]["connected"] is True

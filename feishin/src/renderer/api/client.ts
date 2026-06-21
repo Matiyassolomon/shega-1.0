@@ -14,7 +14,10 @@ export type DeviceClass = 'high' | 'lite';
 export const BACKEND_USER_ID_STORAGE_KEY = 'backend-user-id';
 export const BACKEND_ACCESS_TOKEN_STORAGE_KEY = 'backend-access-token';
 
-export const getBackendUserId = () => localStorage.getItem(BACKEND_USER_ID_STORAGE_KEY) || '1';
+export const getBackendUserId = (): string | null => {
+    const userId = localStorage.getItem(BACKEND_USER_ID_STORAGE_KEY);
+    return userId || null;
+};
 export const getBackendAccessToken = () =>
     localStorage.getItem(BACKEND_ACCESS_TOKEN_STORAGE_KEY) || '';
 
@@ -24,6 +27,17 @@ export const setBackendUserId = (userId: number | string) => {
 
 export const setBackendAccessToken = (token: string) => {
     localStorage.setItem(BACKEND_ACCESS_TOKEN_STORAGE_KEY, token);
+};
+
+export const clearBackendAuth = (): void => {
+    localStorage.removeItem(BACKEND_USER_ID_STORAGE_KEY);
+    localStorage.removeItem(BACKEND_ACCESS_TOKEN_STORAGE_KEY);
+};
+
+export const isBackendAuthenticated = (): boolean => {
+    const userId = getBackendUserId();
+    const token = getBackendAccessToken();
+    return !!(userId && token);
 };
 
 backendClient.interceptors.request.use((config) => {
@@ -140,6 +154,363 @@ export interface UserProfile {
 export const getUserProfile = async (userId: string) => {
     const { data } = await backendClient.get(`/users/${userId}/profile`);
     return data as UserProfile;
+};
+
+export interface RecentlyPlayedSong {
+    song_id: number;
+    title: string;
+    artist: string;
+    album?: string | null;
+    genre?: string | null;
+    cover_art?: string | null;
+    last_played: string | null;
+    play_count: number;
+}
+
+export const getRecentlyPlayed = async (userId: string, hours: number = 24, limit: number = 20) => {
+    const { data } = await backendClient.get(`/users/${userId}/recently-played`, {
+        params: { hours, limit },
+    });
+    return data as RecentlyPlayedSong[];
+};
+
+export const getLikedSongs = async (userId: string, limit: number = 50) => {
+    const { data } = await backendClient.get(`/users/${userId}/liked-songs`, {
+        params: { limit },
+    });
+    return data as RecentlyPlayedSong[];
+};
+
+export interface ArtistSong {
+    song_id: number;
+    title: string;
+    artist: string;
+    genre: string;
+    play_count: number;
+    like_count: number;
+    cover_art?: string | null;
+}
+
+export interface ArtistAlbum {
+    name: string;
+    song_count: number;
+    cover_art?: string | null;
+}
+
+export interface ArtistProfile {
+    artist_name: string;
+    total_songs: number;
+    total_plays: number;
+    total_likes: number;
+    genres: string[];
+    top_songs: ArtistSong[];
+    albums: ArtistAlbum[];
+}
+
+export const getArtistProfile = async (artistName: string) => {
+    const { data } = await backendClient.get(`/users/artists/${encodeURIComponent(artistName)}`);
+    return data as ArtistProfile;
+};
+
+export interface ArtistDashboard {
+    total_earnings: number;
+    total_plays: number;
+    total_likes: number;
+    total_songs: number;
+    recent_plays: number;
+    recent_earnings: number;
+}
+
+export const getArtistDashboard = async (userId: string) => {
+    const { data } = await backendClient.get(`/users/${userId}/artist-dashboard`);
+    return data as ArtistDashboard;
+};
+
+export interface WalletTransaction {
+    id: string;
+    type: 'credit' | 'debit';
+    amount: number;
+    description: string;
+    created_at: string;
+}
+
+export interface Wallet {
+    balance: number;
+    currency: string;
+    transactions: WalletTransaction[];
+}
+
+export const getWallet = async (userId: string) => {
+    const { data } = await backendClient.get(`/users/${userId}/wallet`);
+    return data as Wallet;
+};
+
+export interface PayoutRequest {
+    id: string;
+    user_id: number;
+    amount: number;
+    bank_account: string;
+    bank_name: string;
+    status: 'pending' | 'approved' | 'rejected' | 'completed';
+    created_at: string;
+}
+
+export interface PayoutRequestCreate {
+    amount: number;
+    bank_account: string;
+    bank_name: string;
+}
+
+export const createPayoutRequest = async (userId: string, request: PayoutRequestCreate) => {
+    const { data } = await backendClient.post(`/users/${userId}/payout-requests`, request);
+    return data as PayoutRequest;
+};
+
+export const getPayoutRequests = async (userId: string) => {
+    const { data } = await backendClient.get(`/users/${userId}/payout-requests`);
+    return data as PayoutRequest[];
+};
+
+export interface AdEvent {
+    id: string;
+    user_id: number;
+    event_type: 'play' | 'complete' | 'skip';
+    ad_id: string;
+    song_id: string;
+    duration: number;
+    timestamp: string;
+}
+
+export const trackAdEvent = async (
+    userId: string,
+    eventType: 'play' | 'complete' | 'skip',
+    adId: string,
+    songId: string,
+    duration?: number,
+) => {
+    const { data } = await backendClient.post(`/users/${userId}/ad-events`, {
+        event_type: eventType,
+        ad_id: adId,
+        song_id: songId,
+        duration: duration || 0,
+    });
+    return data as AdEvent;
+};
+
+export interface AdRevenue {
+    total_revenue: number;
+    total_impressions: number;
+    total_completions: number;
+    revenue_per_impression: number;
+    recent_revenue: number;
+}
+
+export const getAdRevenue = async (userId: string) => {
+    const { data } = await backendClient.get(`/users/${userId}/ad-revenue`);
+    return data as AdRevenue;
+};
+
+export interface RecommendationAnalytics {
+    user_id: number;
+    total_recommendations_shown: number;
+    recommendation_click_rate: number;
+    average_session_length: number;
+    top_genres: string[];
+    recommendation_sources: {
+        collaborative: number;
+        content_based: number;
+        trending: number;
+        random: number;
+    };
+}
+
+export const getRecommendationAnalytics = async (userId: string) => {
+    const { data } = await backendClient.get(`/recommendations/analytics`, {
+        params: { user_id: userId },
+    });
+    return data as RecommendationAnalytics;
+};
+
+export interface RecommendationReason {
+    factor: string;
+    confidence: number;
+    description: string;
+}
+
+export interface RecommendationExplanation {
+    user_id: number;
+    song_id: string;
+    song_title: string;
+    artist: string;
+    recommendation_reasons: RecommendationReason[];
+    overall_confidence: number;
+}
+
+export const explainRecommendation = async (userId: string, songId: string) => {
+    const { data } = await backendClient.get(`/recommendations/explain`, {
+        params: { user_id: userId, song_id: songId },
+    });
+    return data as RecommendationExplanation;
+};
+
+export interface SearchSuggestion {
+    type: 'song' | 'artist';
+    text: string;
+    artist?: string;
+    relevance: number;
+}
+
+export interface SearchAutocompleteResponse {
+    suggestions: SearchSuggestion[];
+}
+
+export const searchAutocomplete = async (query: string, limit: number = 10) => {
+    const { data } = await backendClient.get('/search/autocomplete', {
+        params: { query, limit },
+    });
+    return data as SearchAutocompleteResponse;
+};
+
+export interface SearchResult {
+    song_id: string;
+    title: string;
+    artist: string;
+    genre: string;
+    play_count_7d: number;
+    like_count_7d: number;
+    cover_art_path: string | null;
+    relevance_score: number;
+}
+
+export interface SearchResponse {
+    query: string;
+    total: number;
+    offset: number;
+    limit: number;
+    sort_by: string;
+    results: SearchResult[];
+}
+
+export const searchSongs = async (
+    query: string,
+    limit: number = 20,
+    offset: number = 0,
+    sortBy: 'relevance' | 'popularity' | 'recent' = 'relevance',
+) => {
+    const { data } = await backendClient.get('/search/songs', {
+        params: { query, limit, offset, sort_by: sortBy },
+    });
+    return data as SearchResponse;
+};
+
+export interface ArtistSearchResult {
+    artist: string;
+    song_count: number;
+    total_plays: number;
+    relevance_score: number;
+}
+
+export interface ArtistSearchResponse {
+    query: string;
+    results: ArtistSearchResult[];
+}
+
+export const searchArtists = async (query: string, limit: number = 20) => {
+    const { data } = await backendClient.get('/search/artists', {
+        params: { query, limit },
+    });
+    return data as ArtistSearchResponse;
+};
+
+export interface AdminDashboard {
+    total_users: number;
+    total_artists: number;
+    total_songs: number;
+    total_plays: number;
+    total_likes: number;
+    total_revenue: number;
+    active_subscriptions: number;
+    pending_payouts: number;
+    recent_signups: number;
+}
+
+export const getAdminDashboard = async () => {
+    const { data } = await backendClient.get('/users/admin/dashboard');
+    return data as AdminDashboard;
+};
+
+export interface AdminUser {
+    id: number;
+    username: string;
+    email: string;
+    created_at: string;
+    is_active: boolean;
+    subscription_status: string;
+}
+
+export interface AdminUsersResponse {
+    total: number;
+    offset: number;
+    limit: number;
+    users: AdminUser[];
+}
+
+export const getAdminUsers = async (limit: number = 20, offset: number = 0) => {
+    const { data } = await backendClient.get('/users/admin/users', {
+        params: { limit, offset },
+    });
+    return data as AdminUsersResponse;
+};
+
+export interface AdminArtist {
+    id: number;
+    name: string;
+    song_count: number;
+    total_plays: number;
+    total_revenue: number;
+    verified: boolean;
+}
+
+export interface AdminArtistsResponse {
+    total: number;
+    offset: number;
+    limit: number;
+    artists: AdminArtist[];
+}
+
+export const getAdminArtists = async (limit: number = 20, offset: number = 0) => {
+    const { data } = await backendClient.get('/users/admin/artists', {
+        params: { limit, offset },
+    });
+    return data as AdminArtistsResponse;
+};
+
+export interface AdminPayment {
+    id: string;
+    user_id: number;
+    amount: number;
+    currency: string;
+    status: string;
+    payment_type: string;
+    created_at: string;
+}
+
+export interface AdminPaymentsResponse {
+    total: number;
+    offset: number;
+    limit: number;
+    payments: AdminPayment[];
+}
+
+export const getAdminPayments = async (
+    limit: number = 20,
+    offset: number = 0,
+    status?: string,
+) => {
+    const { data } = await backendClient.get('/users/admin/payments', {
+        params: { limit, offset, status },
+    });
+    return data as AdminPaymentsResponse;
 };
 
 export const checkSubscription = async (userId: string) => {

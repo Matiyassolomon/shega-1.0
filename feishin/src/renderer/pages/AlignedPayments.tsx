@@ -10,6 +10,7 @@ import {
     type LegacyPayment,
     getBackendUserId,
 } from '/@/renderer/api/aligned-client';
+import PaymentModal from '/@/renderer/components/PaymentModal';
 import { Stack } from '/@/shared/components/stack/stack';
 import { Text } from '/@/shared/components/text/text';
 import { toast } from '/@/shared/components/toast/toast';
@@ -23,10 +24,14 @@ import {
 
 const AlignedPaymentsPage = () => {
     const userId = getBackendUserId();
+    const navigate = useNavigate();
     const [loading, setLoading] = useState(false);
     const [subscriptionStatus, setSubscriptionStatus] = useState<{ subscribed: boolean } | null>(null);
     const [currentPayment, setCurrentPayment] = useState<LegacyPayment | null>(null);
     const [selectedProvider, setSelectedProvider] = useState('telebirr');
+    const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+    const [paymentItemType, setPaymentItemType] = useState<'subscription' | 'wallet' | 'song'>('subscription');
+    const [paymentItemPrice, setPaymentItemPrice] = useState(0);
 
     const paymentProviders = getPaymentProviders();
 
@@ -46,16 +51,23 @@ const AlignedPaymentsPage = () => {
     const handlePayment = async (
         type: 'playlist_purchase' | 'song_purchase' | 'subscription_monthly' | 'wallet_topup',
     ) => {
+        const amount = type === 'subscription_monthly' ? 199 : type === 'song_purchase' ? 25 : 50;
+        setPaymentItemType(type === 'subscription_monthly' ? 'subscription' : type === 'wallet_topup' ? 'wallet' : 'song');
+        setPaymentItemPrice(amount);
+        setPaymentModalOpen(true);
+    };
+
+    const handlePaymentComplete = async (paymentId: string) => {
         setLoading(true);
         try {
-            const amount = type === 'subscription_monthly' ? 199 : type === 'song_purchase' ? 25 : 50;
+            const amount = paymentItemPrice;
             
             // Step 1: Create payment
             const payment = await createPayment({
                 amount,
                 method: selectedProvider as 'telebirr' | 'cbe',
                 user_id: userId,
-                payment_type: type,
+                payment_type: paymentItemType === 'subscription' ? 'subscription_monthly' : paymentItemType === 'wallet' ? 'wallet_topup' : 'song_purchase',
             });
 
             setCurrentPayment(payment);
@@ -279,6 +291,14 @@ const AlignedPaymentsPage = () => {
                     </ResponsiveGrid>
                 </ResponsiveCard>
             </Stack>
+            
+            <PaymentModal
+                isOpen={paymentModalOpen}
+                onClose={() => setPaymentModalOpen(false)}
+                itemType={paymentItemType}
+                itemPrice={paymentItemPrice}
+                onPaymentComplete={handlePaymentComplete}
+            />
         </ResponsiveLayout>
     );
 };

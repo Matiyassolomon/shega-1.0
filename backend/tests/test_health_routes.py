@@ -18,7 +18,9 @@ def test_liveness_route() -> None:
     response = client.get("/health/live")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "alive"}
+    body = response.json()
+    assert body["status"] == "alive"
+    assert "timestamp" in body
 
 
 def test_security_headers_are_applied() -> None:

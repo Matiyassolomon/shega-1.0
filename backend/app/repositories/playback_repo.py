@@ -164,8 +164,20 @@ class PlaybackRepository:
                 connection.execute(text("ALTER TABLE playback_events ADD COLUMN session_id INTEGER"))
             if "event_type" not in columns:
                 connection.execute(text("ALTER TABLE playback_events ADD COLUMN event_type VARCHAR(20)"))
-            if "timestamp" not in columns:
-                connection.execute(text("ALTER TABLE playback_events ADD COLUMN timestamp DATETIME"))
+            if "occurred_at" not in columns and "timestamp" not in columns:
+                connection.execute(text("ALTER TABLE playback_events ADD COLUMN occurred_at DATETIME"))
+            if "location" not in columns:
+                connection.execute(text("ALTER TABLE playback_events ADD COLUMN location VARCHAR(120)"))
+            if "completed_ratio" not in columns:
+                connection.execute(text("ALTER TABLE playback_events ADD COLUMN completed_ratio FLOAT DEFAULT 0.0 NOT NULL"))
+            if "played_seconds" not in columns:
+                connection.execute(text("ALTER TABLE playback_events ADD COLUMN played_seconds FLOAT DEFAULT 0.0 NOT NULL"))
+            if "is_looped" not in columns:
+                connection.execute(text("ALTER TABLE playback_events ADD COLUMN is_looped BOOLEAN DEFAULT 0 NOT NULL"))
+            if "skipped" not in columns:
+                connection.execute(text("ALTER TABLE playback_events ADD COLUMN skipped BOOLEAN DEFAULT 0 NOT NULL"))
+            if "weight" not in columns:
+                connection.execute(text("ALTER TABLE playback_events ADD COLUMN weight FLOAT DEFAULT 1.0 NOT NULL"))
 
     def song_event_stats(
         self,

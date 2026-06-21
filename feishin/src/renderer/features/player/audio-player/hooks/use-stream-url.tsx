@@ -81,6 +81,16 @@ export function useSongUrl(
                 await stopSessionHeartbeat();
                 const userId = getBackendUserId();
                 
+                if (!userId) {
+                    toast.error({
+                        message: 'Authentication required for playback',
+                        title: 'Playback',
+                    });
+                    resetPlaybackState();
+                    if (mounted) setStreamUrl(undefined);
+                    return;
+                }
+                
                 // Call atomic playback orchestration endpoint
                 // This combines access check + stream URL issuance in one call
                 const result = await startPlayback({

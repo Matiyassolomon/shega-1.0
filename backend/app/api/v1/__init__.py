@@ -5,6 +5,7 @@ from app.api.v1.events import router as events_router
 from app.api.v1.health import router as health_router
 from app.api.v1.playback import router as playback_router
 from app.api.v1.recommendations import router as recommendations_router
+from app.api.v1.search import router as search_router
 from app.api.v1.songs import router as songs_router
 from app.api.v1.users import router as users_router
 
@@ -16,5 +17,6 @@ api_router.include_router(users_router)
 api_router.include_router(songs_router)
 api_router.include_router(playback_router)
 api_router.include_router(recommendations_router)
+api_router.include_router(search_router)
 
 __all__ = ["api_router"]

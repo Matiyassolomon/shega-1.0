@@ -1,6 +1,4 @@
-import { useEffect, useState } from 'react';
-
-import { getBackendUserId, getRecommendations, type RecommendationPayload } from '/@/renderer/api/client';
+import { useRecommendations } from '/@/renderer/api/hooks';
 import { Stack } from '/@/shared/components/stack/stack';
 import { Text } from '/@/shared/components/text/text';
 import { toast } from '/@/shared/components/toast/toast';
@@ -50,32 +48,18 @@ const RecommendationBlock = ({ items, title }: { items?: RecommendationItem[]; t
 };
 
 export const BackendRecommendations = () => {
-    const [feed, setFeed] = useState<null | RecommendationPayload>(null);
+    const { data: feed, isLoading, error } = useRecommendations();
 
-    useEffect(() => {
-        let mounted = true;
-        const userId = getBackendUserId();
+    if (error) {
+        toast.error({
+            message: 'Failed to load recommendations',
+            title: 'Recommendations',
+        });
+    }
 
-        const load = async () => {
-            try {
-                const data = await getRecommendations(userId);
-                if (mounted) {
-                    setFeed(data);
-                }
-            } catch (error: unknown) {
-                toast.error({
-                    message: error instanceof Error ? error.message : 'network error',
-                    title: 'Recommendations',
-                });
-            }
-        };
-
-        load();
-
-        return () => {
-            mounted = false;
-        };
-    }, []);
+    if (isLoading) {
+        return <Text variant="secondary">Loading recommendations...</Text>;
+    }
 
     return (
         <Stack gap="md">

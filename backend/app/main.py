@@ -59,12 +59,57 @@ def _validate_startup_schema() -> None:
         logger.info("startup_schema_validated", tables_count=len(existing_tables))
 
 
+def _backfill_local_schema() -> None:
+    """Add columns expected by current models to older local/dev databases."""
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    with engine.begin() as connection:
+        if "users" in existing_tables:
+            user_columns = {
+                column["name"] for column in inspector.get_columns("users")
+            }
+            if "taste_vector" not in user_columns:
+                connection.execute(text("ALTER TABLE users ADD COLUMN taste_vector JSON"))
+                logger.info("startup_schema_backfilled", table="users", column="taste_vector")
+
+        if "playback_events" in existing_tables:
+            playback_columns = {
+                column["name"] for column in inspector.get_columns("playback_events")
+            }
+            playback_backfills = {
+                "session_id": "INTEGER",
+                "event_type": "VARCHAR(20)",
+                "occurred_at": "TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP",
+                "location": "VARCHAR(120)",
+                "completed_ratio": "FLOAT DEFAULT 0.0 NOT NULL",
+                "played_seconds": "FLOAT DEFAULT 0.0 NOT NULL",
+                "is_looped": "BOOLEAN DEFAULT FALSE NOT NULL",
+                "skipped": "BOOLEAN DEFAULT FALSE NOT NULL",
+                "weight": "FLOAT DEFAULT 1.0 NOT NULL",
+            }
+            for column, definition in playback_backfills.items():
+                if column not in playback_columns:
+                    connection.execute(
+                        text(
+                            f"ALTER TABLE playback_events ADD COLUMN {column} {definition}"
+                        )
+                    )
+                    logger.info(
+                        "startup_schema_backfilled",
+                        table="playback_events",
+                        column=column,
+                    )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     logger.info("application_startup")
     # Create tables for local/dev only; production should use migrations
     if settings.is_sqlite or settings.app_env == "development":
         Base.metadata.create_all(bind=engine)
+    if settings.is_sqlite or settings.app_env == "development":
+        _backfill_local_schema()
     _validate_startup_schema()
     db = SessionLocal()
     try:

@@ -1,37 +1,29 @@
-import { useEffect, useState } from 'react';
-
-import { getBackendUserId, getUserProfile, type UserProfile } from '/@/renderer/api/client';
+import { useUserProfile } from '/@/renderer/api/hooks';
+import { useBackendAuth } from '/@/renderer/hooks/use-backend-auth';
 import { Stack } from '/@/shared/components/stack/stack';
 import { Text } from '/@/shared/components/text/text';
 import { toast } from '/@/shared/components/toast/toast';
 
 const ProfilePage = () => {
-    const userId = getBackendUserId();
-    const [profile, setProfile] = useState<UserProfile | null>(null);
+    const { userId } = useBackendAuth();
+    const { data: profile, isLoading, error } = useUserProfile();
 
-    useEffect(() => {
-        let mounted = true;
-        const load = async () => {
-            try {
-                const data = await getUserProfile(userId);
-                if (mounted) setProfile(data);
-            } catch (error: any) {
-                toast.error({ message: error?.message || 'network error', title: 'Profile' });
-            }
-        };
-        load();
-        return () => {
-            mounted = false;
-        };
-    }, [userId]);
+    if (error) {
+        toast.error({
+            message: 'Failed to load profile',
+            title: 'Profile',
+        });
+    }
 
     return (
         <Stack gap="md" p="lg">
             <Text fw={700} size="xl">
                 Profile
             </Text>
-            <Text variant="secondary">User ID: {userId}</Text>
-            {profile ? (
+            <Text variant="secondary">User ID: {userId || 'Not authenticated'}</Text>
+            {isLoading ? (
+                <Text variant="secondary">Loading profile...</Text>
+            ) : profile ? (
                 <Stack className="telegram-panel" gap="xs" p="md">
                     <Text>Device class: {profile.device_class}</Text>
                     <Text>
@@ -61,7 +53,7 @@ const ProfilePage = () => {
                     </pre>
                 </Stack>
             ) : (
-                <Text variant="secondary">Loading profile...</Text>
+                <Text variant="secondary">No profile data available</Text>
             )}
         </Stack>
     );

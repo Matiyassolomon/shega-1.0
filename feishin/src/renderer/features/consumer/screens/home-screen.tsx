@@ -1,20 +1,31 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useNavigate } from 'react-router';
 
 import styles from './consumer-screens.module.css';
 
 import {
-    getBackendUserId,
-    getRecommendations,
-    getTrending,
-    type RecommendationSong,
-    type TrendingSong,
-} from '/@/renderer/api/client';
+    useRecommendations,
+    useTrending,
+    useRecentlyPlayed,
+} from '/@/renderer/api/hooks';
+import { useBackendAuth } from '/@/renderer/hooks/use-backend-auth';
 import { AppRoute } from '/@/renderer/router/routes';
+import { toast } from '/@/shared/components/toast/toast';
 
 type LookalikeUser = {
     similarity: number;
     user_id: number;
+};
+
+type RecentlyPlayedSong = {
+    song_id: number;
+    title: string;
+    artist: string;
+    album?: string | null;
+    genre?: string | null;
+    cover_art?: string | null;
+    last_played: string | null;
+    play_count: number;
 };
 
 const cardMetaStyle = {
@@ -25,11 +36,11 @@ const cardMetaStyle = {
 
 export default function HomeScreen() {
     const navigate = useNavigate();
-    const backendUserId = getBackendUserId();
-    const [forYou, setForYou] = useState<RecommendationSong[]>([]);
-    const [trending, setTrending] = useState<TrendingSong[]>([]);
-    const [lookalikes, setLookalikes] = useState<LookalikeUser[]>([]);
-    const [loading, setLoading] = useState(true);
+    const { isAuthenticated, userId } = useBackendAuth();
+    
+    const recommendations = useRecommendations('Ethiopia');
+    const trending = useTrending('Ethiopia');
+    const recentlyPlayed = useRecentlyPlayed(24, 10);
 
     const greeting = useMemo(() => {
         const hour = new Date().getHours();
@@ -38,36 +49,32 @@ export default function HomeScreen() {
         return 'Good evening';
     }, []);
 
-    useEffect(() => {
-        let mounted = true;
+    if (recommendations.error) {
+        toast.error({
+            message: 'Failed to load recommendations',
+            title: 'Home',
+        });
+    }
 
-        const load = async () => {
-            setLoading(true);
-            try {
-                const [forYouFeed, trendingFeed] = await Promise.all([
-                    getRecommendations(backendUserId),
-                    getTrending('Ethiopia'),
-                ]);
+    if (trending.error) {
+        toast.error({
+            message: 'Failed to load trending',
+            title: 'Home',
+        });
+    }
 
-                if (!mounted) {
-                    return;
-                }
+    if (recentlyPlayed.error) {
+        toast.error({
+            message: 'Failed to load recently played',
+            title: 'Home',
+        });
+    }
 
-                setForYou(forYouFeed.recommendations);
-                setLookalikes(forYouFeed.lookalike_audience);
-                setTrending(trendingFeed.recommendations);
-            } finally {
-                if (mounted) {
-                    setLoading(false);
-                }
-            }
-        };
-
-        load();
-        return () => {
-            mounted = false;
-        };
-    }, [backendUserId]);
+    const loading = recommendations.isLoading || trending.isLoading || recentlyPlayed.isLoading;
+    const forYou = recommendations.data?.recommendations ?? [];
+    const lookalikes = recommendations.data?.lookalike_audience ?? [];
+    const trendingSongs = trending.data?.recommendations ?? [];
+    const recentSongs = recentlyPlayed.data ?? [];
 
     return (
         <div className={styles.screen}>
@@ -86,6 +93,9 @@ export default function HomeScreen() {
                 </button>
             </div>
 
+            {isAuthenticated && (
+                <RecentlyPlayedSection items={recentSongs} loading={recentlyPlayed.isLoading} />
+            )}
             <InsightRow lookalikes={lookalikes} loading={loading} />
             <SongSection
                 items={forYou}
@@ -93,7 +103,7 @@ export default function HomeScreen() {
                 onOpenMarketplace={() => navigate(AppRoute.MARKETPLACE)}
                 title="Made For You"
             />
-            <TrendingSection items={trending} loading={loading} title="Trending Right Now" />
+            <TrendingSection items={trendingSongs} loading={loading} title="Trending Right Now" />
         </div>
     );
 }
@@ -185,6 +195,9 @@ function TrendingSection({
             </div>
             <div className={styles.horizontalRail}>
                 {loading && <div className={styles.cardButton}>Loading trends...</div>}
+                {!loading && items.length === 0 && (
+                    <div className={styles.cardButton}>No trending songs available</div>
+                )}
                 {!loading &&
                     items.map((item) => (
                         <div className={styles.cardButton} key={item.song_id}>
@@ -197,6 +210,57 @@ function TrendingSection({
                                 <span>
                                     Hot {item.hot_score.toFixed(1)} | Momentum{' '}
                                     {item.momentum_score.toFixed(1)}
+                                </span>
+                            </div>
+                        </div>
+                    ))}
+            </div>
+        </section>
+    );
+}
+
+function RecentlyPlayedSection({
+    items,
+    loading,
+}: {
+    items: RecentlyPlayedSong[];
+    loading: boolean;
+}) {
+    const formatTimeAgo = (dateString: string | null) => {
+        if (!dateString) return 'Unknown';
+        const date = new Date(dateString);
+        const now = new Date();
+        const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+        
+        if (seconds < 60) return 'Just now';
+        if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+        if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+        return `${Math.floor(seconds / 86400)}d ago`;
+    };
+
+    return (
+        <section className={styles.section}>
+            <div className={styles.sectionHeader}>
+                <h2>Recently Played</h2>
+            </div>
+            <div className={styles.horizontalRail}>
+                {loading && <div className={styles.cardButton}>Loading recently played...</div>}
+                {!loading && items.length === 0 && (
+                    <div className={styles.cardButton}>
+                        <div style={cardMetaStyle}>
+                            <strong>No recent plays</strong>
+                            <span>Start listening to build your history</span>
+                        </div>
+                    </div>
+                )}
+                {!loading &&
+                    items.map((item) => (
+                        <div className={styles.cardButton} key={item.song_id}>
+                            <div style={cardMetaStyle}>
+                                <strong>{item.title}</strong>
+                                <span>{item.artist}</span>
+                                <span>
+                                    {formatTimeAgo(item.last_played)} | {item.play_count} plays
                                 </span>
                             </div>
                         </div>

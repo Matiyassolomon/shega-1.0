@@ -9,6 +9,8 @@ import { artistsQueries } from '/@/renderer/features/artists/api/artists-api';
 import { LibraryListItem } from '/@/renderer/features/consumer/components';
 import { usePlayer } from '/@/renderer/features/player/context/player-context';
 import { playlistsQueries } from '/@/renderer/features/playlists/api/playlists-api';
+import { useBackendAuth } from '/@/renderer/hooks/use-backend-auth';
+import { useLikedSongs, useRecentlyPlayed, useMarketplacePlaylists } from '/@/renderer/api/hooks';
 import { AppRoute } from '/@/renderer/router/routes';
 import { useCurrentServerId } from '/@/renderer/store';
 import {
@@ -20,16 +22,23 @@ import {
 } from '/@/shared/types/domain-types';
 import { Play } from '/@/shared/types/types';
 
-type LibraryTab = 'albums' | 'artists' | 'playlists';
+type LibraryTab = 'liked' | 'downloaded' | 'recent' | 'playlists' | 'artists' | 'albums';
 
-const tabs: LibraryTab[] = ['playlists', 'artists', 'albums'];
+const tabs: LibraryTab[] = ['liked', 'downloaded', 'recent', 'playlists', 'artists', 'albums'];
 
 export default function LibraryScreen() {
     const navigate = useNavigate();
     const player = usePlayer();
     const serverId = useCurrentServerId();
+    const { isAuthenticated } = useBackendAuth();
     const [tab, setTab] = useState<LibraryTab>('playlists');
 
+    // Backend hooks
+    const likedSongs = useLikedSongs(50);
+    const recentlyPlayed = useRecentlyPlayed(24, 50);
+    const marketplacePlaylists = useMarketplacePlaylists();
+
+    // Navidrome hooks
     const playlists = useQuery(
         playlistsQueries.list({
             options: {
@@ -76,29 +85,109 @@ export default function LibraryScreen() {
     );
 
     const renderedItems = useMemo(() => {
-        if (tab === 'playlists') {
-            return (playlists.data?.items ?? []).map((item) => (
+        if (tab === 'liked') {
+            if (!isAuthenticated) {
+                return <div style={{ padding: '20px', color: 'rgba(255,255,255,0.6)' }}>Sign in to see your liked songs</div>;
+            }
+            if (likedSongs.isLoading) {
+                return <div style={{ padding: '20px', color: 'rgba(255,255,255,0.6)' }}>Loading liked songs...</div>;
+            }
+            if (!likedSongs.data || likedSongs.data.length === 0) {
+                return <div style={{ padding: '20px', color: 'rgba(255,255,255,0.6)' }}>No liked songs yet. Like songs to build your collection.</div>;
+            }
+            return likedSongs.data.map((item) => (
                 <button
                     className={styles.listButton}
-                    key={item.id}
+                    key={item.song_id}
                     onClick={() => {
-                        if (!serverId) return;
-                        player.addToQueueByFetch(
-                            serverId,
-                            [item.id],
-                            LibraryItem.PLAYLIST,
-                            Play.NOW,
-                        );
-                        navigate(AppRoute.NOW_PLAYING);
+                        // TODO: Play the song
                     }}
                     type="button"
                 >
                     <LibraryListItem
-                        caption={`${item.songCount ?? 0} songs`}
-                        imageId={item.imageId}
-                        meta={item.owner || 'Playlist'}
-                        serverId={item._serverId}
-                        title={item.name}
+                        caption={item.artist}
+                        imageId={item.cover_art}
+                        meta={`${item.play_count} plays`}
+                        serverId=""
+                        title={item.title}
+                        type={LibraryItem.SONG}
+                    />
+                </button>
+            ));
+        }
+
+        if (tab === 'downloaded') {
+            return <div style={{ padding: '20px', color: 'rgba(255,255,255,0.6)' }}>Downloaded songs will appear here (offline feature coming soon)</div>;
+        }
+
+        if (tab === 'recent') {
+            if (!isAuthenticated) {
+                return <div style={{ padding: '20px', color: 'rgba(255,255,255,0.6)' }}>Sign in to see your recently played</div>;
+            }
+            if (recentlyPlayed.isLoading) {
+                return <div style={{ padding: '20px', color: 'rgba(255,255,255,0.6)' }}>Loading recently played...</div>;
+            }
+            if (!recentlyPlayed.data || recentlyPlayed.data.length === 0) {
+                return <div style={{ padding: '20px', color: 'rgba(255,255,255,0.6)' }}>No recently played songs. Start listening to build your history.</div>;
+            }
+            return recentlyPlayed.data.map((item) => (
+                <button
+                    className={styles.listButton}
+                    key={item.song_id}
+                    onClick={() => {
+                        // TODO: Play the song
+                    }}
+                    type="button"
+                >
+                    <LibraryListItem
+                        caption={item.artist}
+                        imageId={item.cover_art}
+                        meta={`${item.play_count} plays`}
+                        serverId=""
+                        title={item.title}
+                        type={LibraryItem.SONG}
+                    />
+                </button>
+            ));
+        }
+
+        if (tab === 'playlists') {
+            const allPlaylists = [
+                ...(playlists.data?.items ?? []).map((item) => ({
+                    ...item,
+                    source: 'navidrome' as const,
+                })),
+                ...(marketplacePlaylists.data ?? []).map((item) => ({
+                    ...item,
+                    source: 'marketplace' as const,
+                })),
+            ];
+
+            return allPlaylists.map((item) => (
+                <button
+                    className={styles.listButton}
+                    key={item.id || item.playlist_id}
+                    onClick={() => {
+                        if (item.source === 'navidrome' && serverId) {
+                            player.addToQueueByFetch(
+                                serverId,
+                                [item.id],
+                                LibraryItem.PLAYLIST,
+                                Play.NOW,
+                            );
+                            navigate(AppRoute.NOW_PLAYING);
+                        } else if (item.source === 'marketplace') {
+                            navigate(AppRoute.MARKETPLACE);
+                        }
+                    }}
+                    type="button"
+                >
+                    <LibraryListItem
+                        caption={item.source === 'navidrome' ? `${item.songCount ?? 0} songs` : `${item.sales_count} sold`}
+                        imageId={item.imageId || item.cover_art_path}
+                        meta={item.source === 'navidrome' ? (item.owner || 'Playlist') : item.creator_name}
+                        serverId={item._serverId || ''}
+                        title={item.name || item.title}
                         type={LibraryItem.PLAYLIST}
                     />
                 </button>
@@ -161,8 +250,14 @@ export default function LibraryScreen() {
         navigate,
         player,
         playlists.data?.items,
+        marketplacePlaylists.data,
         serverId,
         tab,
+        isAuthenticated,
+        likedSongs.data,
+        likedSongs.isLoading,
+        recentlyPlayed.data,
+        recentlyPlayed.isLoading,
     ]);
 
     return (

@@ -25,6 +25,8 @@ export enum AppRoute {
     LIBRARY_SONGS = '/library/songs',
     LOGIN = '/login',
     MARKETPLACE = '/marketplace',
+    ARTIST_PROFILE = '/artist/:artistName',
+    ARTIST_DASHBOARD = '/artist-dashboard',
     NO_NETWORK = '/no-network',
     NOW_PLAYING = '/now-playing',
     PAYMENTS = '/payments',
@@ -34,6 +36,8 @@ export enum AppRoute {
     PROFILE = '/profile',
     RADIO = '/radio',
     SEARCH = '/search',
+    SEARCH_PAGE = '/search-page',
+    ADMIN_DASHBOARD = '/admin-dashboard',
     SERVERS = '/servers',
     SETTINGS = '/settings',
 }

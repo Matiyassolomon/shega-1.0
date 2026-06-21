@@ -16,6 +16,10 @@ const ConsumerLibraryRoute = lazy(
 );
 
 const ProfilePage = lazy(() => import('/@/renderer/pages/Profile'));
+const ArtistProfilePage = lazy(() => import('/@/renderer/pages/ArtistProfile'));
+const ArtistDashboardPage = lazy(() => import('/@/renderer/pages/ArtistDashboard'));
+const SearchPage = lazy(() => import('/@/renderer/pages/SearchPage'));
+const AdminDashboardPage = lazy(() => import('/@/renderer/pages/AdminDashboard'));
 
 // Aligned pages (current working implementation)
 const AlignedMarketplacePage = lazy(() => import('/@/renderer/pages/AlignedMarketplace'));
@@ -87,6 +91,10 @@ export const consumerRoutes = (
             path={AppRoute.PAYMENTS}
         />
         
+        <Route element={<ArtistProfilePage />} path={AppRoute.ARTIST_PROFILE} />
+        <Route element={<ArtistDashboardPage />} path={AppRoute.ARTIST_DASHBOARD} />
+        <Route element={<SearchPage />} path={AppRoute.SEARCH_PAGE} />
+        <Route element={<AdminDashboardPage />} path={AppRoute.ADMIN_DASHBOARD} />
         <Route element={<ProfilePage />} path={AppRoute.PROFILE} />
     </Route>
 );

@@ -8,6 +8,8 @@ import { MediaCard } from '/@/renderer/features/consumer/components';
 import { genresQueries } from '/@/renderer/features/genres/api/genres-api';
 import { usePlayer } from '/@/renderer/features/player/context/player-context';
 import { searchQueries } from '/@/renderer/features/search/api/search-api';
+import { useDebounce } from '/@/renderer/hooks/use-debounce';
+import { useSearchHistory } from '/@/renderer/hooks/use-search-history';
 import { AppRoute } from '/@/renderer/router/routes';
 import { useCurrentServerId } from '/@/renderer/store';
 import { GenreListSort, LibraryItem, SortOrder } from '/@/shared/types/domain-types';
@@ -20,6 +22,8 @@ export default function SearchScreen() {
     const player = usePlayer();
     const serverId = useCurrentServerId();
     const [query, setQuery] = useState('');
+    const debouncedQuery = useDebounce(query, 300);
+    const { history, addToHistory, clearHistory, removeFromHistory } = useSearchHistory();
 
     const genres = useQuery(
         genresQueries.list({
@@ -39,12 +43,12 @@ export default function SearchScreen() {
     const search = useQuery(
         searchQueries.search({
             options: {
-                enabled: Boolean(serverId) && query.trim().length > 0,
+                enabled: Boolean(serverId) && debouncedQuery.trim().length > 0,
             },
             query: {
                 albumArtistLimit: 6,
                 albumLimit: 6,
-                query: query.trim(),
+                query: debouncedQuery.trim(),
                 songLimit: 8,
             },
             serverId,
@@ -60,6 +64,23 @@ export default function SearchScreen() {
         [genres.data?.items],
     );
 
+    const handleSearch = (searchQuery: string) => {
+        setQuery(searchQuery);
+        if (searchQuery.trim()) {
+            addToHistory(searchQuery);
+        }
+    };
+
+    const handleHistoryClick = (historyQuery: string) => {
+        handleSearch(historyQuery);
+    };
+
+    const handleClearHistory = () => {
+        clearHistory();
+    };
+
+    const isLoading = search.isLoading || genres.isLoading;
+
     return (
         <div className={styles.screen}>
             <div className={styles.topBar}>
@@ -72,71 +93,206 @@ export default function SearchScreen() {
                 />
             </div>
 
-            {query.trim() ? (
+            {debouncedQuery.trim() ? (
                 <div className={styles.searchResults}>
-                    <SearchSection
-                        items={search.data?.songs ?? []}
-                        onSelect={(songId) => {
-                            const song = search.data?.songs.find((item) => item.id === songId);
-                            if (!song) return;
-                            player.addToQueueByData([song], Play.NOW, song.id);
-                            navigate(AppRoute.NOW_PLAYING);
-                        }}
-                        title="Songs"
-                        type={LibraryItem.SONG}
-                    />
-                    <SearchSection
-                        items={search.data?.albums ?? []}
-                        onSelect={(albumId) => {
-                            if (!serverId) return;
-                            player.addToQueueByFetch(
-                                serverId,
-                                [albumId],
-                                LibraryItem.ALBUM,
-                                Play.NOW,
-                            );
-                            navigate(AppRoute.NOW_PLAYING);
-                        }}
-                        title="Albums"
-                        type={LibraryItem.ALBUM}
-                    />
-                    <SearchSection
-                        items={search.data?.albumArtists ?? []}
-                        onSelect={(artistId) => {
-                            if (!serverId) return;
-                            player.addToQueueByFetch(
-                                serverId,
-                                [artistId],
-                                LibraryItem.ALBUM_ARTIST,
-                                Play.NOW,
-                            );
-                            navigate(AppRoute.NOW_PLAYING);
-                        }}
-                        title="Artists"
-                        type={LibraryItem.ALBUM_ARTIST}
-                    />
+                    {isLoading ? (
+                        <SearchSkeleton />
+                    ) : (
+                        <>
+                            <SearchSection
+                                items={search.data?.songs ?? []}
+                                onSelect={(songId) => {
+                                    const song = search.data?.songs.find((item) => item.id === songId);
+                                    if (!song) return;
+                                    player.addToQueueByData([song], Play.NOW, song.id);
+                                    navigate(AppRoute.NOW_PLAYING);
+                                }}
+                                title="Songs"
+                                type={LibraryItem.SONG}
+                            />
+                            <SearchSection
+                                items={search.data?.albums ?? []}
+                                onSelect={(albumId) => {
+                                    if (!serverId) return;
+                                    player.addToQueueByFetch(
+                                        serverId,
+                                        [albumId],
+                                        LibraryItem.ALBUM,
+                                        Play.NOW,
+                                    );
+                                    navigate(AppRoute.NOW_PLAYING);
+                                }}
+                                title="Albums"
+                                type={LibraryItem.ALBUM}
+                            />
+                            <SearchSection
+                                items={search.data?.albumArtists ?? []}
+                                onSelect={(artistId) => {
+                                    if (!serverId) return;
+                                    player.addToQueueByFetch(
+                                        serverId,
+                                        [artistId],
+                                        LibraryItem.ALBUM_ARTIST,
+                                        Play.NOW,
+                                    );
+                                    navigate(AppRoute.NOW_PLAYING);
+                                }}
+                                title="Artists"
+                                type={LibraryItem.ALBUM_ARTIST}
+                            />
+                            {!search.data?.songs?.length && 
+                             !search.data?.albums?.length && 
+                             !search.data?.albumArtists?.length && (
+                                <div className={styles.section}>
+                                    <div className={styles.sectionHeader}>
+                                        <h2>No results</h2>
+                                    </div>
+                                    <p style={{ color: 'rgba(255,255,255,0.6)' }}>
+                                        No songs, albums, or artists found for "{debouncedQuery}"
+                                    </p>
+                                </div>
+                            )}
+                        </>
+                    )}
                 </div>
             ) : (
-                <section className={styles.section}>
-                    <div className={styles.sectionHeader}>
-                        <h2>Browse all</h2>
-                    </div>
-                    <div className={styles.genreGrid}>
-                        {genreCards.map(({ color, genre }) => (
-                            <button
-                                className={styles.genreCard}
-                                key={genre.id}
-                                onClick={() => setQuery(genre.name)}
-                                style={{ background: `linear-gradient(135deg, ${color}, #181818)` }}
-                                type="button"
-                            >
-                                <span>{genre.name}</span>
-                            </button>
-                        ))}
-                    </div>
-                </section>
+                <>
+                    {history.length > 0 && (
+                        <section className={styles.section}>
+                            <div className={styles.sectionHeader}>
+                                <h2>Recent searches</h2>
+                                <button
+                                    onClick={handleClearHistory}
+                                    style={{
+                                        background: 'none',
+                                        border: 'none',
+                                        color: 'rgba(255,255,255,0.6)',
+                                        cursor: 'pointer',
+                                        fontSize: '14px',
+                                    }}
+                                    type="button"
+                                >
+                                    Clear all
+                                </button>
+                            </div>
+                            <div className={styles.horizontalRail}>
+                                {history.map((item) => (
+                                    <button
+                                        className={styles.cardButton}
+                                        key={item.timestamp}
+                                        onClick={() => handleHistoryClick(item.query)}
+                                        style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'space-between',
+                                            padding: '12px 16px',
+                                        }}
+                                        type="button"
+                                    >
+                                        <span>{item.query}</span>
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                removeFromHistory(item.query);
+                                            }}
+                                            style={{
+                                                background: 'none',
+                                                border: 'none',
+                                                color: 'rgba(255,255,255,0.4)',
+                                                cursor: 'pointer',
+                                                padding: '4px',
+                                            }}
+                                            type="button"
+                                        >
+                                            ×
+                                        </button>
+                                    </button>
+                                ))}
+                            </div>
+                        </section>
+                    )}
+                    <section className={styles.section}>
+                        <div className={styles.sectionHeader}>
+                            <h2>Browse all</h2>
+                        </div>
+                        <div className={styles.genreGrid}>
+                            {genreCards.map(({ color, genre }) => (
+                                <button
+                                    className={styles.genreCard}
+                                    key={genre.id}
+                                    onClick={() => handleSearch(genre.name)}
+                                    style={{ background: `linear-gradient(135deg, ${color}, #181818)` }}
+                                    type="button"
+                                >
+                                    <span>{genre.name}</span>
+                                </button>
+                            ))}
+                        </div>
+                    </section>
+                </>
             )}
         </div>
+    );
+}
+
+function SearchSkeleton() {
+    return (
+        <>
+            <section className={styles.section}>
+                <div className={styles.sectionHeader}>
+                    <h2>Songs</h2>
+                </div>
+                <div className={styles.searchGrid}>
+                    {Array.from({ length: 8 }).map((_, index) => (
+                        <div
+                            className={styles.cardButton}
+                            key={index}
+                            style={{
+                                background: 'rgba(255,255,255,0.05)',
+                                minHeight: '80px',
+                                borderRadius: '8px',
+                            }}
+                        />
+                    ))}
+                </div>
+            </section>
+            <section className={styles.section}>
+                <div className={styles.sectionHeader}>
+                    <h2>Albums</h2>
+                </div>
+                <div className={styles.searchGrid}>
+                    {Array.from({ length: 6 }).map((_, index) => (
+                        <div
+                            className={styles.cardButton}
+                            key={index}
+                            style={{
+                                background: 'rgba(255,255,255,0.05)',
+                                minHeight: '80px',
+                                borderRadius: '8px',
+                            }}
+                        />
+                    ))}
+                </div>
+            </section>
+            <section className={styles.section}>
+                <div className={styles.sectionHeader}>
+                    <h2>Artists</h2>
+                </div>
+                <div className={styles.searchGrid}>
+                    {Array.from({ length: 6 }).map((_, index) => (
+                        <div
+                            className={styles.cardButton}
+                            key={index}
+                            style={{
+                                background: 'rgba(255,255,255,0.05)',
+                                minHeight: '80px',
+                                borderRadius: '8px',
+                            }}
+                        />
+                    ))}
+                </div>
+            </section>
+        </>
     );
 }
 

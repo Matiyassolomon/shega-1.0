@@ -252,6 +252,84 @@
     gap: 24px;
 }
 
+.actionRow {
+    display: flex;
+    gap: 24px;
+    align-items: center;
+    justify-content: center;
+}
+
+.actionRow button {
+    display: grid;
+    place-items: center;
+    min-width: 44px;
+    min-height: 44px;
+    font-size: 1.25rem;
+}
+
+.lyricsPanel,
+.queuePanel {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    max-height: 60vh;
+    background: #181818;
+    border: 1px solid rgb(255 255 255 / 6%);
+    border-radius: 20px 20px 0 0;
+    padding: 20px;
+    z-index: 100;
+    animation: slideUp 0.3s ease;
+}
+
+@keyframes slideUp {
+    from {
+        transform: translateY(100%);
+    }
+    to {
+        transform: translateY(0);
+    }
+}
+
+.lyricsHeader,
+.queueHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+.lyricsHeader h3,
+.queueHeader h3 {
+    margin: 0;
+    font-size: 1.25rem;
+}
+
+.lyricsContent,
+.queueContent {
+    max-height: calc(60vh - 80px);
+    overflow-y: auto;
+}
+
+.queueItem {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    padding: 12px;
+    border-radius: 8px;
+    transition: background-color 0.18s ease;
+}
+
+.queueItem:hover {
+    background: rgb(255 255 255 / 6%);
+}
+
+.queueItem span:first-child {
+    min-width: 24px;
+    color: rgb(255 255 255 / 66%);
+    font-size: 0.88rem;
+}
+
 .progressRow,
 .transportRow,
 .volumeRow {
