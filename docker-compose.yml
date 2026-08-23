@@ -1,117 +1,61 @@
+version: '3.8'
+
 services:
   postgres:
-    image: postgres:15
-    container_name: music-postgres
-    restart: always
+    image: postgres:15-alpine
+    container_name: shega_postgres
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-musicuser}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme-secure-password}
-      POSTGRES_DB: ${POSTGRES_DB:-musicdb}
+      POSTGRES_DB: shega
+      POSTGRES_USER: shega_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
-      - ./postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-musicuser} -d ${POSTGRES_DB:-musicdb}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    networks:
-      - music-net
-    security_opt:
-      - no-new-privileges:true
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
-    container_name: music-redis
-    restart: always
-    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme-redis-password}
-    networks:
-      - music-net
-    security_opt:
-      - no-new-privileges:true
+    container_name: shega_redis
+    command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
 
   navidrome:
     image: deluan/navidrome:latest
-    container_name: navidrome
-    restart: always
+    container_name: shega_navidrome
+    environment:
+      ND_DATAPATH: /data
+      ND_MUSICFOLDER: /music
+      ND_LASTFM_ENABLED: "true"
+      ND_LASTFM_APIKEY: ${LASTFM_APIKEY}
+      ND_LASTFM_SECRET: ${LASTFM_SECRET}
+    volumes:
+      - ./navidrome-data:/data
+      - ./music:/music
     ports:
       - "4533:4533"
-    environment:
-      ND_DEVAUTOCREATEADMINPASSWORD: ${ND_ADMIN_PASSWORD:-changeme-navidrome-password}
-      ND_SCANINTERVAL: 1h
-      ND_LOGLEVEL: info
-      ND_SESSIONTIMEOUT: 24h
-    volumes:
-      - ./music:/music
-      - ./navidrome-data:/data
-    networks:
-      - music-net
-    security_opt:
-      - no-new-privileges:true
+    restart: unless-stopped
 
   backend:
-    build: ./backend
-    container_name: music-backend
-    restart: always
-    depends_on:
-      postgres:
-        condition: service_healthy
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: shega_backend
     environment:
-      APP_ENV: ${APP_ENV:-development}
-      APP_TITLE: ${APP_TITLE:-Music Platform Backend}
-      APP_VERSION: ${APP_VERSION:-1.0.0}
-      SECRET_KEY: ${SECRET_KEY:-changeme-super-secret-key-min-32-chars}
-      ADMIN_API_KEY: ${ADMIN_API_KEY:-changeme-admin-api-key}
-      DATABASE_URL: ${DATABASE_URL:-postgresql://musicuser:changeme-secure-password@postgres:5432/musicdb}
-      DATABASE_ECHO: ${DATABASE_ECHO:-false}
-      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
-      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
-      DB_POOL_RECYCLE: ${DB_POOL_RECYCLE:-1800}
-      DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-30}
-      REDIS_URL: ${REDIS_URL:-redis://:changeme-redis-password@redis:6379/0}
-      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
-      DOCS_ENABLED: ${DOCS_ENABLED:-true}
-      REDOC_ENABLED: ${REDOC_ENABLED:-true}
-      CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-false}
-      HTTPS_REDIRECT: ${HTTPS_REDIRECT:-false}
-      MAX_UPLOAD_SIZE_BYTES: ${MAX_UPLOAD_SIZE_BYTES:-10485760}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
+      DATABASE_URL: postgresql+asyncpg://shega_user:${DB_PASSWORD}@postgres:5432/shega
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY}
     ports:
       - "8000:8000"
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready')\""]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 40s
-    networks:
-      - music-net
-    security_opt:
-      - no-new-privileges:true
-    read_only: true
-    tmpfs:
-      - /tmp
-
-  worker:
-    build: ./backend
-    container_name: music-worker
-    command: celery -A app.tasks worker --beat --loglevel=info
     depends_on:
       - postgres
       - redis
-    environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://musicuser:changeme-secure-password@postgres:5432/musicdb}
-      REDIS_URL: ${REDIS_URL:-redis://:changeme-redis-password@redis:6379/0}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    networks:
-      - music-net
-    security_opt:
-      - no-new-privileges:true
-    read_only: true
-    tmpfs:
-      - /tmp
+    restart: unless-stopped
 
-networks:
-  music-net:
-    driver: bridge
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,98 +1,195 @@
-import base64
-import hashlib
-import hmac
-import json
-import time
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
+import jwt
+from jwt import PyJWTError
+from passlib.context import CryptContext
+from fastapi import HTTPException, Security, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+import uuid
+import os
 
-from fastapi import Depends, HTTPException
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from app.models.models import User
+from app.core.database import get_db
+from app.core.redis import redis_client
 
-from app.core.settings import get_settings
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 15
+REFRESH_TOKEN_EXPIRE_DAYS = 7
 
-bearer_scheme = HTTPBearer(auto_error=False)
+security = HTTPBearer(auto_error=False)
 
+class TokenBlacklist:
+    @staticmethod
+    async def blacklist_token(token: str, expires_in: int):
+        await redis_client.set(f"blacklist:{token}", "revoked", ttl=expires_in)
+    
+    @staticmethod
+    async def is_blacklisted(token: str) -> bool:
+        return await redis_client.exists(f"blacklist:{token}") > 0
 
-def _b64url_encode(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+class AuthService:
+    @staticmethod
+    def verify_password(plain_password: str, hashed_password: str) -> bool:
+        return pwd_context.verify(plain_password, hashed_password)
+    
+    @staticmethod
+    def get_password_hash(password: str) -> str:
+        return pwd_context.hash(password)
+    
+    @staticmethod
+    def create_tokens(user_id: str, username: str) -> Dict[str, str]:
+        access_token_data = {
+            "sub": str(user_id),
+            "username": username,
+            "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+            "iat": datetime.utcnow(),
+            "type": "access"
+        }
+        access_token = jwt.encode(access_token_data, SECRET_KEY, algorithm=ALGORITHM)
+        
+        refresh_token_data = {
+            "sub": str(user_id),
+            "exp": datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+            "iat": datetime.utcnow(),
+            "type": "refresh"
+        }
+        refresh_token = jwt.encode(refresh_token_data, SECRET_KEY, algorithm=ALGORITHM)
+        
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        }
 
-
-def _b64url_decode(data: str) -> bytes:
-    padding = "=" * (-len(data) % 4)
-    return base64.urlsafe_b64decode(data + padding)
-
-
-def _json_dumps(payload: dict) -> bytes:
-    return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-
-
-def create_access_token(user_id: int, expires_in_seconds: int | None = None) -> str:
-    settings = get_settings()
-    now = int(time.time())
-    ttl = expires_in_seconds or settings.access_token_ttl_seconds
-    header = {"alg": "HS256", "typ": "JWT"}
-    payload = {
-        "exp": now + ttl,
-        "iat": now,
-        "sub": str(user_id),
-        "type": "access",
-    }
-
-    encoded_header = _b64url_encode(_json_dumps(header))
-    encoded_payload = _b64url_encode(_json_dumps(payload))
-    signing_input = f"{encoded_header}.{encoded_payload}".encode("ascii")
-    signature = hmac.new(
-        settings.secret_key.encode("utf-8"),
-        signing_input,
-        hashlib.sha256,
-    ).digest()
-    encoded_signature = _b64url_encode(signature)
-    return f"{encoded_header}.{encoded_payload}.{encoded_signature}"
-
-
-def decode_access_token(token: str) -> dict:
-    settings = get_settings()
-
-    try:
-        encoded_header, encoded_payload, encoded_signature = token.split(".")
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail="Invalid token format") from exc
-
-    signing_input = f"{encoded_header}.{encoded_payload}".encode("ascii")
-    expected_signature = hmac.new(
-        settings.secret_key.encode("utf-8"),
-        signing_input,
-        hashlib.sha256,
-    ).digest()
-
-    try:
-        provided_signature = _b64url_decode(encoded_signature)
-        payload = json.loads(_b64url_decode(encoded_payload).decode("utf-8"))
-    except (ValueError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=401, detail="Invalid token payload") from exc
-
-    if not hmac.compare_digest(provided_signature, expected_signature):
-        raise HTTPException(status_code=401, detail="Invalid token signature")
-
-    exp = payload.get("exp")
-    sub = payload.get("sub")
-    token_type = payload.get("type")
-
-    if token_type != "access" or not isinstance(sub, str):
-        raise HTTPException(status_code=401, detail="Invalid token claims")
-    if not isinstance(exp, int) or exp <= int(time.time()):
-        raise HTTPException(status_code=401, detail="Token has expired")
-
-    return payload
-
-
-def get_current_user_id(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-) -> int:
-    if credentials is None or credentials.scheme.lower() != "bearer":
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Security(security),
+    db: AsyncSession = Depends(get_db)
+) -> User:
+    if not credentials:
         raise HTTPException(status_code=401, detail="Authentication required")
-
-    payload = decode_access_token(credentials.credentials)
+    
+    token = credentials.credentials
+    
+    if await TokenBlacklist.is_blacklisted(token):
+        raise HTTPException(status_code=401, detail="Token revoked")
+    
     try:
-        return int(payload["sub"])
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=401, detail="Invalid token subject") from exc
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        
+        result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+        user = result.scalar_one_or_none()
+        
+        if not user or not user.is_active:
+            raise HTTPException(status_code=401, detail="User not found")
+        
+        return user
+        
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
+import jwt
+from jwt import PyJWTError
+from passlib.context import CryptContext
+from fastapi import HTTPException, Security, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+import uuid
+import os
+
+from app.models.models import User
+from app.core.database import get_db
+from app.core.redis import redis_client
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 15
+REFRESH_TOKEN_EXPIRE_DAYS = 7
+
+security = HTTPBearer(auto_error=False)
+
+class TokenBlacklist:
+    @staticmethod
+    async def blacklist_token(token: str, expires_in: int):
+        await redis_client.set(f"blacklist:{token}", "revoked", ttl=expires_in)
+    
+    @staticmethod
+    async def is_blacklisted(token: str) -> bool:
+        return await redis_client.exists(f"blacklist:{token}") > 0
+
+class AuthService:
+    @staticmethod
+    def verify_password(plain_password: str, hashed_password: str) -> bool:
+        return pwd_context.verify(plain_password, hashed_password)
+    
+    @staticmethod
+    def get_password_hash(password: str) -> str:
+        return pwd_context.hash(password)
+    
+    @staticmethod
+    def create_tokens(user_id: str, username: str) -> Dict[str, str]:
+        access_token_data = {
+            "sub": str(user_id),
+            "username": username,
+            "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+            "iat": datetime.utcnow(),
+            "type": "access"
+        }
+        access_token = jwt.encode(access_token_data, SECRET_KEY, algorithm=ALGORITHM)
+        
+        refresh_token_data = {
+            "sub": str(user_id),
+            "exp": datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+            "iat": datetime.utcnow(),
+            "type": "refresh"
+        }
+        refresh_token = jwt.encode(refresh_token_data, SECRET_KEY, algorithm=ALGORITHM)
+        
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        }
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Security(security),
+    db: AsyncSession = Depends(get_db)
+) -> User:
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    token = credentials.credentials
+    
+    if await TokenBlacklist.is_blacklisted(token):
+        raise HTTPException(status_code=401, detail="Token revoked")
+    
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        
+        result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+        user = result.scalar_one_or_none()
+        
+        if not user or not user.is_active:
+            raise HTTPException(status_code=401, detail="User not found")
+        
+        return user
+        
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")

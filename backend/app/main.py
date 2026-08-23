@@ -1,265 +1,94 @@
-from contextlib import asynccontextmanager
-from datetime import datetime
-
-from fastapi import Depends, FastAPI, Request
-from fastapi.exceptions import RequestValidationError
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
-from sqlalchemy import inspect, text
-from sqlalchemy.orm import Session
-from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
-from starlette.middleware.trustedhost import TrustedHostMiddleware
+from contextlib import asynccontextmanager
+import logging
 
-from app.api.routers import (
-    admin_holidays_router,
-    audio_analysis_router,
-    calendar_router,
-    core_router,
-    marketplace_router,
-    payments_router,
-)
-from app.api.v1 import api_router as api_v1_router
-from app.api.health import router as health_router
-from app.api.auth import router as auth_router
-from app.core.logging import configure_logging, get_logger
-from app.core.settings import get_settings
-from app.core.middleware import RequestIDMiddleware, TimingMiddleware, SecurityHeadersMiddleware, get_request_id
-from app.db import Base, SessionLocal, engine, get_db
-from app.db.utils import check_db_health, get_connection_pool_stats
-from app.middleware import (
-    CacheMiddleware,
-    MaxRequestSizeMiddleware,
-    RateLimitMiddleware,
-    RequestContextMiddleware,
-)
-from app.services import crud
+from app.core.config import settings
+from app.core.database import engine
+from app.core.redis import redis_client
+from app.core.security.middleware import SecurityMiddleware
+from app.core.rate_limiter import rate_limiter
+from app.api.routers import auth, users, playback, wallet, payments, webhooks
 
-settings = get_settings()
-configure_logging(settings.log_level)
-logger = get_logger(__name__)
-
-
-def _validate_startup_schema() -> None:
-    """Validate required tables exist. Warns about mismatches but never alters schema at runtime."""
-    inspector = inspect(engine)
-    existing_tables = set(inspector.get_table_names())
-    required_tables = {
-        "users", "subscriptions", "playback_events", "sessions",
-        "library_songs", "stream_sessions", "song_purchases", "song_marketplace"
-    }
-    missing = required_tables - existing_tables
-    if missing:
-        logger.warning(
-            "startup_schema_missing_tables",
-            missing_tables=sorted(missing),
-            message="Run migrations to create missing tables"
-        )
-    else:
-        logger.info("startup_schema_validated", tables_count=len(existing_tables))
-
-
-def _backfill_local_schema() -> None:
-    """Add columns expected by current models to older local/dev databases."""
-    inspector = inspect(engine)
-    existing_tables = set(inspector.get_table_names())
-
-    with engine.begin() as connection:
-        if "users" in existing_tables:
-            user_columns = {
-                column["name"] for column in inspector.get_columns("users")
-            }
-            if "taste_vector" not in user_columns:
-                connection.execute(text("ALTER TABLE users ADD COLUMN taste_vector JSON"))
-                logger.info("startup_schema_backfilled", table="users", column="taste_vector")
-
-        if "playback_events" in existing_tables:
-            playback_columns = {
-                column["name"] for column in inspector.get_columns("playback_events")
-            }
-            playback_backfills = {
-                "session_id": "INTEGER",
-                "event_type": "VARCHAR(20)",
-                "occurred_at": "TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP",
-                "location": "VARCHAR(120)",
-                "completed_ratio": "FLOAT DEFAULT 0.0 NOT NULL",
-                "played_seconds": "FLOAT DEFAULT 0.0 NOT NULL",
-                "is_looped": "BOOLEAN DEFAULT FALSE NOT NULL",
-                "skipped": "BOOLEAN DEFAULT FALSE NOT NULL",
-                "weight": "FLOAT DEFAULT 1.0 NOT NULL",
-            }
-            for column, definition in playback_backfills.items():
-                if column not in playback_columns:
-                    connection.execute(
-                        text(
-                            f"ALTER TABLE playback_events ADD COLUMN {column} {definition}"
-                        )
-                    )
-                    logger.info(
-                        "startup_schema_backfilled",
-                        table="playback_events",
-                        column=column,
-                    )
-
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
-    logger.info("application_startup")
-    # Create tables for local/dev only; production should use migrations
-    if settings.is_sqlite or settings.app_env == "development":
-        Base.metadata.create_all(bind=engine)
-    if settings.is_sqlite or settings.app_env == "development":
-        _backfill_local_schema()
-    _validate_startup_schema()
-    db = SessionLocal()
-    try:
-        crud.ensure_seed_data(db)
-    finally:
-        db.close()
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("🚀 Starting Shega API...")
+    await redis_client.connect()
+    logger.info("✅ Redis connected")
+    
+    async with engine.connect() as conn:
+        await conn.execute("SELECT 1")
+    logger.info("✅ Database connected")
+    
     yield
-    logger.info("application_shutdown")
-
+    
+    # Shutdown
+    logger.info("🛑 Shutting down...")
+    await engine.dispose()
+    await redis_client.close()
 
 app = FastAPI(
-    title=settings.app_title,
-    version=settings.app_version,
-    docs_url="/docs" if settings.docs_enabled else None,
-    redoc_url="/redoc" if settings.redoc_enabled else None,
-    openapi_url="/openapi.json" if settings.docs_enabled else None,
+    title="Shega Music Platform",
+    version="1.0.0",
     lifespan=lifespan,
+    docs_url="/api/docs" if settings.DOCS_ENABLED else None,
 )
 
-# Add middleware in correct order
+# Middleware (order matters)
+app.add_middleware(SecurityMiddleware)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins,
-    allow_credentials=settings.cors_allow_credentials,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Admin-Key", "X-Request-ID"],
-)
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
-app.add_middleware(GZipMiddleware, minimum_size=1024)
-app.add_middleware(
-    MaxRequestSizeMiddleware, max_body_size=settings.max_upload_size_bytes
+    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["*"],
 )
 app.add_middleware(
-    RateLimitMiddleware, 
-    requests_per_minute=getattr(settings, 'rate_limit_per_minute', 60)
+    TrustedHostMiddleware,
+    allowed_hosts=settings.ALLOWED_HOSTS
 )
-app.add_middleware(CacheMiddleware, cache_ttl=300)
-app.add_middleware(RequestContextMiddleware)
 
-if settings.https_redirect:
-    app.add_middleware(HTTPSRedirectMiddleware)
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    logger.warning(
-        "validation_error",
-        errors=exc.errors(),
-        request_id=getattr(request.state, "request_id", None),
-        path=request.url.path
-    )
-    return JSONResponse(
-        status_code=422,
-        content={
-            "detail": exc.errors(),
-            "message": "Request validation failed",
-            "request_id": getattr(request.state, "request_id", None),
-        },
-    )
-
-
-@app.exception_handler(Exception)
-async def unhandled_exception_handler(request: Request, exc: Exception):
-    logger.error(
-        "unhandled_exception",
-        error=str(exc),
-        request_id=getattr(request.state, "request_id", None),
-        path=request.url.path,
-        exc_info=True
-    )
-    return JSONResponse(
-        status_code=500,
-        content={
-            "detail": "Internal server error",
-            "request_id": getattr(request.state, "request_id", None),
-        },
-    )
-
-
-@app.get("/")
-def root():
-    return {
-        "message": "Music Platform Backend Running",
-        "environment": settings.app_env,
-        "version": settings.app_version,
-    }
-
-
+# Health endpoints
 @app.get("/health")
-def health():
-    return {"status": "ok", "environment": settings.app_env}
+async def health():
+    return {"status": "ok"}
 
-
-@app.get("/health/live")
-def liveness():
-    """
-    Kubernetes liveness probe.
-    Returns 200 if the process is alive and can accept requests.
-    """
-    return {"status": "alive", "timestamp": datetime.utcnow().isoformat()}
-
-
-@app.get("/health/ready")
-def readiness(db: Session = Depends(get_db)):
-    """
-    Kubernetes readiness probe.
-    Returns 200 only when all dependencies are healthy (database, cache).
-    """
-    # Check database health
-    db_health = check_db_health(db)
-    
-    if not db_health.get("connected"):
-        from fastapi import HTTPException
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "status": "not_ready",
-                "database": db_health,
-                "request_id": get_request_id()
-            }
-        )
-    
-    # Check cache health
-    from app.core.cache import cache
-    cache_health = cache.health_check()
-    
-    return {
-        "status": "ready",
-        "database": db_health,
-        "cache": cache_health,
-        "pool": get_connection_pool_stats(engine),
-        "request_id": get_request_id(),
-        "timestamp": datetime.utcnow().isoformat()
+@app.get("/readiness")
+async def readiness():
+    checks = {
+        "database": False,
+        "redis": False,
     }
+    
+    try:
+        async with engine.connect() as conn:
+            await conn.execute("SELECT 1")
+        checks["database"] = True
+    except Exception as e:
+        logger.error(f"Database health check failed: {e}")
+    
+    try:
+        await redis_client.ping()
+        checks["redis"] = True
+    except Exception as e:
+        logger.error(f"Redis health check failed: {e}")
+    
+    if all(checks.values()):
+        return {"status": "ready", "checks": checks}
+    else:
+        return {"status": "not_ready", "checks": checks}
 
-
-app.include_router(core_router)
-app.include_router(marketplace_router)
-app.include_router(payments_router)
-app.include_router(calendar_router)
-app.include_router(api_v1_router)
-app.include_router(health_router)
-app.include_router(auth_router)
-app.include_router(admin_holidays_router)
-app.include_router(audio_analysis_router)
-
-# Add observability middleware
-app.add_middleware(RequestIDMiddleware)
-app.add_middleware(TimingMiddleware)
-
-# Add security headers middleware
-from app.core.middleware import SecurityHeadersMiddleware
-app.add_middleware(SecurityHeadersMiddleware)
+# Include routers
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
+app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
+app.include_router(playback.router, prefix="/api/v1/playback", tags=["playback"])
+app.include_router(wallet.router, prefix="/api/v1/wallet", tags=["wallet"])
+app.include_router(payments.router, prefix="/api/v1/payments", tags=["payments"])
+app.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
